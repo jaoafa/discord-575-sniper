@@ -10,15 +10,17 @@ from src.discord_client import (
 
 
 def test_build_reply_detects_575_famous_example():
-    """有名な五七五の句を渡すと各句を含む返信文が生成されることを確認する。"""
+    """有名な五七五の句を渡すと DetectionResult が返り、各句を含む返信文が生成されることを確認する。"""
     # 「古池や(5)/蛙飛び込む(7)/水の音(5)」= 17モーラの有名な句
     text = "古池や蛙飛び込む水の音"
-    reply = build_reply(text)
-    assert reply is not None
-    assert reply.startswith("🎋")
-    assert "古池や" in reply
-    assert "蛙飛び込む" in reply
-    assert "水の音" in reply
+    result = build_reply(text)
+    assert result is not None
+    assert result.reply_text.startswith("🎋")
+    assert "古池や" in result.reply_text
+    assert "蛙飛び込む" in result.reply_text
+    assert "水の音" in result.reply_text
+    assert result.candidate.parts == ("古池や", "蛙飛び込む", "水の音")
+    assert len(result.morphemes) == result.candidate.end_idx - result.candidate.start_idx
 
 
 def test_build_reply_no_match_returns_none():

@@ -1,24 +1,35 @@
 import asyncio
 import logging
+from dataclasses import dataclass
 
 import discord
 from discord import app_commands
 
 from .config_store import ConfigStore
-from .senryu.finder import find_candidates, pick_best
+from .record_store import RecordStore
+from .senryu.finder import Candidate, find_candidates, pick_best
 from .senryu.preprocess import sanitize_text
-from .senryu.tokenizer import tokenize
+from .senryu.tokenizer import Morpheme, tokenize
 
 logger = logging.getLogger(__name__)
 
 REPLY_TEMPLATE = "🎋 川柳を検出しました！\n> {p1}\n> {p2}\n> {p3}"
 
 
-def build_reply(raw_text: str) -> str | None:
-    """生テキストから検出パイプラインを実行し、川柳の返信を構築する。
+@dataclass
+class DetectionResult:
+    """川柳検出パイプラインの結果。返信テキストと記録用データの両方を保持する。"""
+
+    reply_text: str
+    candidate: Candidate
+    morphemes: list[Morpheme]
+
+
+def build_reply(raw_text: str) -> DetectionResult | None:
+    """生テキストから検出パイプラインを実行し、返信テキストと記録用データを構築する。
 
     raw_text: Discord から取得した生のテキスト。
-    返り値: 検出された川柳の返信文字列、または検出されなかった場合は None。
+    返り値: 検出結果(DetectionResult)、または検出されなかった場合は None。
     """
     text = sanitize_text(raw_text)
     if not text:
@@ -31,7 +42,12 @@ def build_reply(raw_text: str) -> str | None:
     if best is None:
         return None
     p1, p2, p3 = best.parts
-    return REPLY_TEMPLATE.format(p1=p1, p2=p2, p3=p3)
+    reply_text = REPLY_TEMPLATE.format(p1=p1, p2=p2, p3=p3)
+    return DetectionResult(
+        reply_text=reply_text,
+        candidate=best,
+        morphemes=morphemes[best.start_idx:best.end_idx],
+    )
 
 
 async def handle_enable(config_store: ConfigStore, channel_id: int) -> str:
