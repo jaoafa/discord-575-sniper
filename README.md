@@ -7,10 +7,12 @@
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 cp .env.example .env
 # .env に DISCORD_TOKEN と GUILD_ID を設定
 ```
+
+`requirements.txt` は実行に必要な依存のみ、`requirements-dev.txt` はそれに加えてテストに必要な依存(pytest 等)を含む。
 
 Discord Developer Portal の Bot 設定ページで「MESSAGE CONTENT INTENT」(特権インテント)を有効にしておくこと。
 これが無効だと `message.content` が空文字で届き、川柳検出が黙って発火しない。
@@ -20,6 +22,16 @@ Discord Developer Portal の Bot 設定ページで「MESSAGE CONTENT INTENT」(
 ```bash
 python -m src
 ```
+
+### Docker での起動
+
+```bash
+cp .env.example .env
+# .env に DISCORD_TOKEN と GUILD_ID を設定
+docker compose up -d --build
+```
+
+`data/` ディレクトリ(チャンネル設定を保存する SQLite DB)はボリュームとして永続化される。
 
 ## チャンネル設定
 

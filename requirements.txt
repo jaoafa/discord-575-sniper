@@ -2,6 +2,4 @@ discord.py==2.7.1
 sudachipy==0.6.11
 sudachidict-core==20260428
 python-dotenv==1.2.2
-pytest==9.1.1
-pytest-asyncio==1.4.0
 requests==2.34.2
