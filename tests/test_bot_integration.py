@@ -234,3 +234,21 @@ async def test_on_message_records_even_when_reply_fails(client, records_db_path)
     count = conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
     conn.close()
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_on_message_replies_even_when_recording_fails(client, record_store):
+    """RecordStore への記録が失敗しても、検出した川柳への返信は行われることを確認する
+    (記録と返信は互いの成否に依存させないため)。
+    """
+    def failing_add_record(**kwargs):
+        raise RuntimeError("db error")
+
+    record_store.add_record = failing_add_record
+    message = FakeMessage(
+        SENRYU_TEXT, FakeGuild(GUILD_ID), FakeAuthor(bot=False), FakeChannel(CHANNEL_ID)
+    )
+    await client.on_message(message)
+
+    assert len(message.reply_calls) == 1
+    assert message.reply_calls[0].startswith("🎋")

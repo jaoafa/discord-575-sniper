@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 from datetime import datetime, timezone
 
 from .senryu.tokenizer import Morpheme
@@ -20,6 +21,9 @@ class RecordStore:
         """
         # check_same_thread=False: 呼び出し側で asyncio.to_thread を使い、
         # イベントループをブロックしないよう別スレッドから呼び出すため。
+        # ただし sqlite3 コネクションは複数スレッドからの同時アクセスに対して
+        # 安全ではないため、_lock で書き込みを直列化する。
+        self._lock = threading.Lock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute(
             """
@@ -72,23 +76,24 @@ class RecordStore:
             ],
             ensure_ascii=False,
         )
-        self._conn.execute(
-            """
-            INSERT INTO records (
-                detected_at, guild_id, channel_id, user_id, message_id,
-                part1, part2, part3, morphemes_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                detected_at,
-                guild_id,
-                channel_id,
-                user_id,
-                message_id,
-                parts[0],
-                parts[1],
-                parts[2],
-                morphemes_json,
-            ),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO records (
+                    detected_at, guild_id, channel_id, user_id, message_id,
+                    part1, part2, part3, morphemes_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    detected_at,
+                    guild_id,
+                    channel_id,
+                    user_id,
+                    message_id,
+                    parts[0],
+                    parts[1],
+                    parts[2],
+                    morphemes_json,
+                ),
+            )
+            self._conn.commit()

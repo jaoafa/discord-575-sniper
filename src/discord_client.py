@@ -133,7 +133,8 @@ def create_bot(guild_id: int, config_store: ConfigStore, record_store: RecordSto
         if detection is not None:
             try:
                 # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
-                # 記録は Discord への返信の成否に依存させない(検出した事実自体を残すため)。
+                # 記録と返信は互いの成否に依存させない(検出した事実自体を残しつつ、
+                # 記録側の障害でユーザーへの返信まで失われないようにするため)。
                 await asyncio.to_thread(
                     record_store.add_record,
                     guild_id=message.guild.id,
@@ -144,8 +145,7 @@ def create_bot(guild_id: int, config_store: ConfigStore, record_store: RecordSto
                     morphemes=detection.morphemes,
                 )
             except Exception:
-                logger.exception("川柳の記録に失敗したため、このメッセージの処理をスキップします。")
-                return
+                logger.exception("川柳の記録に失敗しました。")
             try:
                 await message.reply(detection.reply_text)
             except Exception:
