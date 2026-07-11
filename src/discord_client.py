@@ -69,12 +69,13 @@ async def handle_status(config_store: ConfigStore, channel_id: int, parent_id: i
     return f"このチャンネルの川柳検出は現在「{state}」です。"
 
 
-def create_bot(guild_id: int, config_store: ConfigStore) -> discord.Client:
+def create_bot(guild_id: int, config_store: ConfigStore, record_store: RecordStore) -> discord.Client:
     """discord.py の Client を組み立て、イベントとスラッシュコマンドを配線する。
 
     Args:
         guild_id: コマンドを同期する対象ギルドの ID。
         config_store: チャンネルごとの有効/無効設定を保持する ConfigStore。
+        record_store: 検出した川柳を記録する RecordStore。
 
     Returns:
         イベントハンドラとスラッシュコマンドが登録済みの discord.Client。
@@ -125,13 +126,28 @@ def create_bot(guild_id: int, config_store: ConfigStore) -> discord.Client:
         try:
             # 5-7-5 探索は最悪ケースで形態素数の3乗に比例するため、
             # イベントループをブロックしないよう別スレッドで実行する。
-            reply = await asyncio.to_thread(build_reply, message.content)
+            detection = await asyncio.to_thread(build_reply, message.content)
         except Exception:
             logger.exception("川柳検出処理中に例外が発生したため、このメッセージの処理をスキップします。")
             return
-        if reply is not None:
+        if detection is not None:
             try:
-                await message.reply(reply)
+                # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
+                # 記録は Discord への返信の成否に依存させない(検出した事実自体を残すため)。
+                await asyncio.to_thread(
+                    record_store.add_record,
+                    guild_id=message.guild.id,
+                    channel_id=channel.id,
+                    user_id=message.author.id,
+                    message_id=message.id,
+                    parts=detection.candidate.parts,
+                    morphemes=detection.morphemes,
+                )
+            except Exception:
+                logger.exception("川柳の記録に失敗したため、このメッセージの処理をスキップします。")
+                return
+            try:
+                await message.reply(detection.reply_text)
             except Exception:
                 logger.exception("メッセージへの返信に失敗しました。")
 
