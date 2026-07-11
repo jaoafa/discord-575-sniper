@@ -1,24 +1,35 @@
 import asyncio
 import logging
+from dataclasses import dataclass
 
 import discord
 from discord import app_commands
 
 from .config_store import ConfigStore
-from .senryu.finder import find_candidates, pick_best
+from .record_store import RecordStore
+from .senryu.finder import Candidate, find_candidates, pick_best
 from .senryu.preprocess import sanitize_text
-from .senryu.tokenizer import tokenize
+from .senryu.tokenizer import Morpheme, tokenize
 
 logger = logging.getLogger(__name__)
 
 REPLY_TEMPLATE = "🎋 川柳を検出しました！\n> {p1}\n> {p2}\n> {p3}"
 
 
-def build_reply(raw_text: str) -> str | None:
-    """生テキストから検出パイプラインを実行し、川柳の返信を構築する。
+@dataclass
+class DetectionResult:
+    """川柳検出パイプラインの結果。返信テキストと記録用データの両方を保持する。"""
+
+    reply_text: str
+    candidate: Candidate
+    morphemes: list[Morpheme]
+
+
+def build_reply(raw_text: str) -> DetectionResult | None:
+    """生テキストから検出パイプラインを実行し、返信テキストと記録用データを構築する。
 
     raw_text: Discord から取得した生のテキスト。
-    返り値: 検出された川柳の返信文字列、または検出されなかった場合は None。
+    返り値: 検出結果(DetectionResult)、または検出されなかった場合は None。
     """
     text = sanitize_text(raw_text)
     if not text:
@@ -31,7 +42,12 @@ def build_reply(raw_text: str) -> str | None:
     if best is None:
         return None
     p1, p2, p3 = best.parts
-    return REPLY_TEMPLATE.format(p1=p1, p2=p2, p3=p3)
+    reply_text = REPLY_TEMPLATE.format(p1=p1, p2=p2, p3=p3)
+    return DetectionResult(
+        reply_text=reply_text,
+        candidate=best,
+        morphemes=morphemes[best.start_idx:best.end_idx],
+    )
 
 
 async def handle_enable(config_store: ConfigStore, channel_id: int) -> str:
@@ -53,12 +69,13 @@ async def handle_status(config_store: ConfigStore, channel_id: int, parent_id: i
     return f"このチャンネルの川柳検出は現在「{state}」です。"
 
 
-def create_bot(guild_id: int, config_store: ConfigStore) -> discord.Client:
+def create_bot(guild_id: int, config_store: ConfigStore, record_store: RecordStore) -> discord.Client:
     """discord.py の Client を組み立て、イベントとスラッシュコマンドを配線する。
 
     Args:
         guild_id: コマンドを同期する対象ギルドの ID。
         config_store: チャンネルごとの有効/無効設定を保持する ConfigStore。
+        record_store: 検出した川柳を記録する RecordStore。
 
     Returns:
         イベントハンドラとスラッシュコマンドが登録済みの discord.Client。
@@ -109,13 +126,28 @@ def create_bot(guild_id: int, config_store: ConfigStore) -> discord.Client:
         try:
             # 5-7-5 探索は最悪ケースで形態素数の3乗に比例するため、
             # イベントループをブロックしないよう別スレッドで実行する。
-            reply = await asyncio.to_thread(build_reply, message.content)
+            detection = await asyncio.to_thread(build_reply, message.content)
         except Exception:
             logger.exception("川柳検出処理中に例外が発生したため、このメッセージの処理をスキップします。")
             return
-        if reply is not None:
+        if detection is not None:
             try:
-                await message.reply(reply)
+                # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
+                # 記録と返信は互いの成否に依存させない(検出した事実自体を残しつつ、
+                # 記録側の障害でユーザーへの返信まで失われないようにするため)。
+                await asyncio.to_thread(
+                    record_store.add_record,
+                    guild_id=message.guild.id,
+                    channel_id=channel.id,
+                    user_id=message.author.id,
+                    message_id=message.id,
+                    parts=detection.candidate.parts,
+                    morphemes=detection.morphemes,
+                )
+            except Exception:
+                logger.exception("川柳の記録に失敗しました。")
+            try:
+                await message.reply(detection.reply_text)
             except Exception:
                 logger.exception("メッセージへの返信に失敗しました。")
 
