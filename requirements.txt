@@ -1,0 +1,5 @@
+discord.py==2.7.1
+sudachipy==0.6.11
+sudachidict-core==20260428
+python-dotenv==1.2.2
+requests==2.34.2

@@ -1,0 +1,14 @@
+name: hadolint
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  hadolint:
+    name: hadolint
+    uses: book000/templates/.github/workflows/reusable-hadolint-ci.yml@master
