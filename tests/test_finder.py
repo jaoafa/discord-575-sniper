@@ -2,8 +2,8 @@ from src.senryu.finder import Candidate, find_candidates, pick_best
 from src.senryu.tokenizer import Morpheme
 
 
-def _m(surface, mora, start, end):
-    return Morpheme(surface=surface, reading="", mora=mora, start=start, end=end)
+def _m(surface, mora, start, end, pos=""):
+    return Morpheme(surface=surface, reading="", mora=mora, start=start, end=end, pos=pos)
 
 
 def test_find_candidates_exact_575():
@@ -41,6 +41,32 @@ def test_find_candidates_within_longer_message():
     candidates = find_candidates(morphemes, text)
     assert len(candidates) == 1
     assert candidates[0].parts == ("あいうえお", "かきくけこさし", "たちつてと")
+
+
+def test_find_candidates_excludes_part_starting_with_particle():
+    """各パートの先頭が助詞の候補は不自然な句切りとして除外されることを確認する。"""
+    morphemes = [
+        _m("あい", 2, 0, 2, pos="動詞"),
+        _m("うえおかき", 5, 2, 7, pos="助詞"),  # 助詞始まりなので part1 として不成立
+        _m("くけこさしすせ", 7, 7, 14, pos="名詞"),
+        _m("そたちつて", 5, 14, 19, pos="名詞"),
+    ]
+    text = "あいうえおかきくけこさしすせそたちつて"
+    candidates = find_candidates(morphemes, text)
+    assert candidates == []
+
+
+def test_find_candidates_excludes_middle_part_starting_with_auxiliary_verb():
+    """part2/part3 の先頭が助動詞など付属語の候補も除外されることを確認する。"""
+    morphemes = [
+        _m("あいうえお", 5, 0, 5, pos="名詞"),
+        _m("か", 1, 5, 6, pos="助動詞"),  # part2 が助動詞始まりなので不成立
+        _m("きくけこさし", 6, 6, 12, pos="名詞"),
+        _m("たちつてと", 5, 12, 17, pos="名詞"),
+    ]
+    text = "あいうえおかきくけこさしたちつてと"
+    candidates = find_candidates(morphemes, text)
+    assert candidates == []
 
 
 def test_pick_best_prefers_longer_text_span():

@@ -12,6 +12,8 @@ class Morpheme:
     """SudachiPyで解析した1形態素の情報を保持するデータクラス。
 
     start/end はサニタイズ済みテキスト内の文字オフセット。
+    pos は品詞の大分類(例: "名詞" "助詞")。5-7-5 各パートの開始位置として
+    不自然な品詞(助詞・助動詞など)を除外する判定に使う。
     """
 
     surface: str
@@ -19,6 +21,7 @@ class Morpheme:
     mora: int
     start: int
     end: int
+    pos: str = ""
 
 
 def tokenize(text: str) -> list["Morpheme"]:
@@ -39,6 +42,7 @@ def tokenize(text: str) -> list["Morpheme"]:
                 mora=count_mora(reading),
                 start=m.begin(),
                 end=m.end(),
+                pos=m.part_of_speech()[0],
             )
         )
     return morphemes

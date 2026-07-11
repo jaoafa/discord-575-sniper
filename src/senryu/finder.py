@@ -2,6 +2,17 @@ from dataclasses import dataclass
 
 from .tokenizer import Morpheme
 
+# これらの品詞は単独では文節を開始できず、直前の語に付属して初めて意味を成す
+# (例: 「友達と会話」の「と」から始まる句は文法的に浮いていて不自然)。
+# 5-7-5 各パートの先頭形態素がこれらの品詞であれば、その分割は句の途中で
+# ぶった切っているだけなので候補から除外する。
+_NON_STARTING_POS = {"助詞", "助動詞", "接尾辞", "補助記号", "空白"}
+
+
+def _can_start_part(m: Morpheme) -> bool:
+    """形態素が 5-7-5 の各パートの先頭になり得るかどうかを判定する。"""
+    return m.pos not in _NON_STARTING_POS
+
 
 @dataclass
 class Candidate:
@@ -40,6 +51,8 @@ def find_candidates(morphemes: list[Morpheme], text: str) -> list[Candidate]:
 
     candidates = []
     for i in range(n):
+        if not _can_start_part(morphemes[i]):
+            continue
         for j in range(i + 1, n + 1):
             # mora_sum は mora(常に非負)の累積和なので j を増やすほど広義単調増加する。
             # 5 を超えたら以降の j でも二度と 5 に戻らないため break で打ち切れる。
@@ -48,12 +61,16 @@ def find_candidates(morphemes: list[Morpheme], text: str) -> list[Candidate]:
                 continue
             if s1 > 5:
                 break
+            if j >= n or not _can_start_part(morphemes[j]):
+                continue
             for k in range(j + 1, n + 1):
                 s2 = mora_sum(j, k)
                 if s2 < 7:
                     continue
                 if s2 > 7:
                     break
+                if k >= n or not _can_start_part(morphemes[k]):
+                    continue
                 for m in range(k + 1, n + 1):
                     s3 = mora_sum(k, m)
                     if s3 < 5:
