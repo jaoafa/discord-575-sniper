@@ -15,7 +15,4 @@ COPY src/ ./src/
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
-RUN useradd -m appuser && chown -R appuser:appuser /app
-USER appuser
-
 ENTRYPOINT ["./entrypoint.sh"]
