@@ -27,3 +27,11 @@ def test_tokenize_furuikeya_is_five_mora_total():
     # 「古池や」は フルイケヤ = 5モーラ
     morphemes = tokenize("古池や")
     assert sum(m.mora for m in morphemes) == 5
+
+
+def test_tokenize_sets_pos():
+    """各形態素に品詞の大分類(pos)が設定されることを確認する。"""
+    morphemes = tokenize("友達と会話")
+    pos_by_surface = {m.surface: m.pos for m in morphemes}
+    assert pos_by_surface["と"] == "助詞"
+    assert pos_by_surface["会話"] == "名詞"
