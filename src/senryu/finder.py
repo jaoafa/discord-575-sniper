@@ -4,36 +4,113 @@ from .tokenizer import Morpheme
 
 # これらの品詞は単独では文節を開始できず、直前の語に付属して初めて意味を成す
 # (例: 「友達と会話」の「と」から始まる句は文法的に浮いていて不自然)。
-# 5-7-5 各パートの先頭形態素がこれらの品詞であれば、その分割は句の途中で
+# 各パートの先頭形態素がこれらの品詞であれば、その分割は句の途中で
 # ぶった切っているだけなので候補から除外する。
 _NON_STARTING_POS = {"助詞", "助動詞", "接尾辞", "補助記号", "空白"}
 
+# find_candidates が探索する音数パターン(各要素は1パートあたりのモーラ数)。
+SENRYU_PATTERN: tuple[int, ...] = (5, 7, 5)
+TANKA_PATTERN: tuple[int, ...] = (5, 7, 5, 7, 7)
+DEFAULT_PATTERNS: tuple[tuple[int, ...], ...] = (SENRYU_PATTERN, TANKA_PATTERN)
+
 
 def _can_start_part(m: Morpheme) -> bool:
-    """形態素が 5-7-5 の各パートの先頭になり得るかどうかを判定する。"""
+    """形態素が各パートの先頭になり得るかどうかを判定する。"""
     return m.pos not in _NON_STARTING_POS
 
 
 @dataclass
 class Candidate:
-    """5-7-5 の部分列候補を表すデータクラス。
+    """5-7-5 または 5-7-5-7-7 の部分列候補を表すデータクラス。
 
     start_idx と end_idx は morphemes リスト内のインデックス範囲。
     text は原文から抽出した完全なテキスト。
-    parts は(5音, 7音, 5音)の3つ部分に分割されたテキスト。
+    parts は各パートに分割されたテキスト(3要素または5要素)。
+    pattern は parts に対応する各パートのモーラ数(例: (5, 7, 5))。
     """
 
     start_idx: int
     end_idx: int
     text: str
-    parts: tuple[str, str, str]
+    parts: tuple[str, ...]
+    pattern: tuple[int, ...]
 
 
-def find_candidates(morphemes: list[Morpheme], text: str) -> list[Candidate]:
-    """形態素リストから 5-7-5 部分列の候補をすべて探索する。
+def _find_from(
+    morphemes: list[Morpheme],
+    prefix: list[int],
+    text: str,
+    start: int,
+    remaining_pattern: tuple[int, ...],
+    part_starts: list[int],
+    full_pattern: tuple[int, ...],
+) -> list[Candidate]:
+    """remaining_pattern の残りパートを start から再帰的に探索する。
+
+    part_starts は確定済みの各パート開始インデックスの累積リスト。
+    remaining_pattern は再帰のたびに先頭要素が削られていく残りパート、
+    full_pattern は再帰全体を通じて変化しない探索対象パターン全体
+    (Candidate.pattern に設定する値)。
+    """
+    if not remaining_pattern:
+        idxs = part_starts + [start]
+        parts = tuple(
+            text[morphemes[idxs[i]].start:morphemes[idxs[i + 1] - 1].end]
+            for i in range(len(idxs) - 1)
+        )
+        full_text = text[morphemes[idxs[0]].start:morphemes[idxs[-1] - 1].end]
+        return [
+            Candidate(
+                start_idx=idxs[0],
+                end_idx=idxs[-1],
+                text=full_text,
+                parts=parts,
+                pattern=full_pattern,
+            )
+        ]
+
+    if not _can_start_part(morphemes[start]):
+        return []
+
+    n = len(morphemes)
+    target = remaining_pattern[0]
+    is_last_part = len(remaining_pattern) == 1
+    results = []
+    for end in range(start + 1, n + 1):
+        # prefix はモーラ数(常に非負)の累積和なので end を増やすほど広義単調増加する。
+        # target を超えたら以降の end でも二度と target に戻らないため break で打ち切れる。
+        s = prefix[end] - prefix[start]
+        if s < target:
+            continue
+        if s > target:
+            break
+        if not is_last_part and end >= n:
+            continue
+        results.extend(
+            _find_from(
+                morphemes,
+                prefix,
+                text,
+                end,
+                remaining_pattern[1:],
+                part_starts + [start],
+                full_pattern,
+            )
+        )
+    return results
+
+
+def find_candidates(
+    morphemes: list[Morpheme],
+    text: str,
+    patterns: tuple[tuple[int, ...], ...] = DEFAULT_PATTERNS,
+) -> list[Candidate]:
+    """形態素リストから patterns に含まれる各音数パターンの部分列候補をすべて探索する。
 
     morphemes: 形態素のリスト。mora フィールドが設定されていること。
     text: 元のテキスト文字列。start/end の参照に使用。
+    patterns: 探索する音数パターンのタプル。デフォルトは 5-7-5(川柳)と
+        5-7-5-7-7(短歌)の両方。
 
     返り値: 見つかった Candidate オブジェクトのリスト。
     """
@@ -45,50 +122,10 @@ def find_candidates(morphemes: list[Morpheme], text: str) -> list[Candidate]:
     for idx, m in enumerate(morphemes):
         prefix[idx + 1] = prefix[idx] + m.mora
 
-    def mora_sum(i: int, j: int) -> int:
-        """形態素インデックス i から j 直前までのモーラ数の合計を返す。"""
-        return prefix[j] - prefix[i]
-
     candidates = []
-    for i in range(n):
-        if not _can_start_part(morphemes[i]):
-            continue
-        for j in range(i + 1, n + 1):
-            # mora_sum は mora(常に非負)の累積和なので j を増やすほど広義単調増加する。
-            # 5 を超えたら以降の j でも二度と 5 に戻らないため break で打ち切れる。
-            s1 = mora_sum(i, j)
-            if s1 < 5:
-                continue
-            if s1 > 5:
-                break
-            if j >= n or not _can_start_part(morphemes[j]):
-                continue
-            for k in range(j + 1, n + 1):
-                s2 = mora_sum(j, k)
-                if s2 < 7:
-                    continue
-                if s2 > 7:
-                    break
-                if k >= n or not _can_start_part(morphemes[k]):
-                    continue
-                for m in range(k + 1, n + 1):
-                    s3 = mora_sum(k, m)
-                    if s3 < 5:
-                        continue
-                    if s3 > 5:
-                        break
-                    part1 = text[morphemes[i].start:morphemes[j - 1].end]
-                    part2 = text[morphemes[j].start:morphemes[k - 1].end]
-                    part3 = text[morphemes[k].start:morphemes[m - 1].end]
-                    full_text = text[morphemes[i].start:morphemes[m - 1].end]
-                    candidates.append(
-                        Candidate(
-                            start_idx=i,
-                            end_idx=m,
-                            text=full_text,
-                            parts=(part1, part2, part3),
-                        )
-                    )
+    for pattern in patterns:
+        for i in range(n):
+            candidates.extend(_find_from(morphemes, prefix, text, i, pattern, [], pattern))
     return candidates
 
 
