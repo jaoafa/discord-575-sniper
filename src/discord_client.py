@@ -133,7 +133,7 @@ def create_bot(guild_id: int, config_store: ConfigStore, record_store: RecordSto
         if not enabled:
             return
         try:
-            # 5-7-5 探索は最悪ケースで形態素数の3乗に比例するため、
+            # 5-7-5・5-7-5-7-7 探索は最悪ケースで形態素数のパート数乗に比例するため、
             # イベントループをブロックしないよう別スレッドで実行する。
             detection = await asyncio.to_thread(build_reply, message.content)
         except Exception:
