@@ -70,6 +70,7 @@ class FakeMessage:
 
 
 SENRYU_TEXT = "古池や蛙飛び込む水の音"
+TANKA_TEXT = "古池や蛙飛び込む水の音やまぶきのえだうめがかがやく"
 NON_SENRYU_TEXT = "こんにちは"
 
 
@@ -252,3 +253,35 @@ async def test_on_message_replies_even_when_recording_fails(client, record_store
 
     assert len(message.reply_calls) == 1
     assert message.reply_calls[0].startswith("🎋")
+
+
+@pytest.mark.asyncio
+async def test_on_message_replies_to_tanka_with_tanka_header(client):
+    """短歌(5-7-5-7-7)を検知すると「短歌を検出しました」で始まる返信をすることを確認する。"""
+    message = FakeMessage(
+        TANKA_TEXT, FakeGuild(GUILD_ID), FakeAuthor(bot=False), FakeChannel(CHANNEL_ID)
+    )
+    await client.on_message(message)
+    assert len(message.reply_calls) == 1
+    assert message.reply_calls[0].startswith("🎋 短歌を検出しました！")
+
+
+@pytest.mark.asyncio
+async def test_on_message_records_detected_tanka_with_five_parts(client, records_db_path):
+    """短歌検出時に part4/part5 を含む5パートが RecordStore へ記録されることを確認する。"""
+    message = FakeMessage(
+        TANKA_TEXT,
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=7000),
+        FakeChannel(CHANNEL_ID),
+        message_id=8000,
+    )
+    await client.on_message(message)
+
+    conn = sqlite3.connect(records_db_path)
+    row = conn.execute(
+        "SELECT part1, part2, part3, part4, part5 FROM records"
+    ).fetchone()
+    conn.close()
+
+    assert row == ("古池や", "蛙飛び込む", "水の音", "やまぶきのえだ", "うめがかがやく")

@@ -13,7 +13,17 @@ from .senryu.tokenizer import Morpheme, tokenize
 
 logger = logging.getLogger(__name__)
 
-REPLY_TEMPLATE = "🎋 川柳を検出しました！\n> {p1}\n> {p2}\n> {p3}"
+_REPLY_HEADERS: dict[int, str] = {
+    3: "🎋 川柳を検出しました！",
+    5: "🎋 短歌を検出しました！",
+}
+
+
+def _build_reply_text(candidate: Candidate) -> str:
+    """検出した候補のパート数に応じた見出しで返信テキストを組み立てる。"""
+    header = _REPLY_HEADERS[len(candidate.parts)]
+    lines = "\n".join(f"> {p}" for p in candidate.parts)
+    return f"{header}\n{lines}"
 
 
 @dataclass
@@ -41,8 +51,7 @@ def build_reply(raw_text: str) -> DetectionResult | None:
     best = pick_best(candidates)
     if best is None:
         return None
-    p1, p2, p3 = best.parts
-    reply_text = REPLY_TEMPLATE.format(p1=p1, p2=p2, p3=p3)
+    reply_text = _build_reply_text(best)
     return DetectionResult(
         reply_text=reply_text,
         candidate=best,
