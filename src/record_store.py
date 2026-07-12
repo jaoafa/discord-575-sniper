@@ -37,11 +37,26 @@ class RecordStore:
                 part1 TEXT NOT NULL,
                 part2 TEXT NOT NULL,
                 part3 TEXT NOT NULL,
+                part4 TEXT,
+                part5 TEXT,
                 morphemes_json TEXT NOT NULL
             )
             """
         )
+        self._migrate_add_tanka_columns()
         self._conn.commit()
+
+    def _migrate_add_tanka_columns(self) -> None:
+        """part1〜part3 の3列時代に作成された既存 DB に part4/part5 列を追加する。
+
+        CREATE TABLE IF NOT EXISTS は既存テーブルに新規列を追加しないため、
+        旧スキーマの DB ファイルに対してはこのマイグレーションが必要。
+        """
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(records)")}
+        if "part4" not in columns:
+            self._conn.execute("ALTER TABLE records ADD COLUMN part4 TEXT")
+        if "part5" not in columns:
+            self._conn.execute("ALTER TABLE records ADD COLUMN part5 TEXT")
 
     def add_record(
         self,
@@ -50,18 +65,18 @@ class RecordStore:
         channel_id: int,
         user_id: int,
         message_id: int,
-        parts: tuple[str, str, str],
+        parts: tuple[str, ...],
         morphemes: list[Morpheme],
     ) -> None:
-        """検出した川柳を1件記録する。
+        """検出した川柳・短歌を1件記録する。
 
         Args:
             guild_id: 検出元メッセージが投稿されたギルドの ID。
             channel_id: 検出元メッセージが投稿されたチャンネルの ID。
             user_id: 検出元メッセージの投稿者 ID。
             message_id: 検出元メッセージの ID。
-            parts: 5-7-5 の各パートのテキスト。
-            morphemes: 採用された川柳部分に対応する形態素のリスト。
+            parts: 各パートのテキスト。川柳(3要素)または短歌(5要素)。
+            morphemes: 採用された部分に対応する形態素のリスト。
         """
         detected_at = datetime.now(timezone.utc).isoformat()
         morphemes_json = json.dumps(
@@ -76,13 +91,15 @@ class RecordStore:
             ],
             ensure_ascii=False,
         )
+        part4 = parts[3] if len(parts) >= 4 else None
+        part5 = parts[4] if len(parts) >= 5 else None
         with self._lock:
             self._conn.execute(
                 """
                 INSERT INTO records (
                     detected_at, guild_id, channel_id, user_id, message_id,
-                    part1, part2, part3, morphemes_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    part1, part2, part3, part4, part5, morphemes_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     detected_at,
@@ -93,6 +110,8 @@ class RecordStore:
                     parts[0],
                     parts[1],
                     parts[2],
+                    part4,
+                    part5,
                     morphemes_json,
                 ),
             )
