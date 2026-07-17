@@ -184,7 +184,7 @@ class RecordStore:
 
         Args:
             channel_id: 対象チャンネルの ID。
-            column: 取得する列名("part1"〜"part5" のいずれか)。
+            column: 取得する列名(_PICKABLE_COLUMNS のいずれか)。
             require_tanka: True の場合、part4 が NOT NULL のレコード
                 (短歌として検出されたレコード)のみを対象にする。
 
@@ -197,7 +197,10 @@ class RecordStore:
         """
         if column not in self._PICKABLE_COLUMNS:
             raise ValueError(f"invalid column: {column!r}")
-        query = f"SELECT {column}, user_id FROM records WHERE channel_id = ?"
+        # column 自体も NOT NULL 条件に含める: part4/part5 は本来常に両方
+        # NULL か両方非 NULL のはずだが、その前提が将来崩れても
+        # (句のテキスト, user_id) の非 NULL 保証(戻り値の型)を守るため。
+        query = f"SELECT {column}, user_id FROM records WHERE channel_id = ? AND {column} IS NOT NULL"
         params: list[object] = [channel_id]
         if require_tanka:
             query += " AND part4 IS NOT NULL"
