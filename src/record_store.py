@@ -40,7 +40,8 @@ class RecordStore:
                 part3 TEXT NOT NULL,
                 part4 TEXT,
                 part5 TEXT,
-                morphemes_json TEXT NOT NULL
+                morphemes_json TEXT NOT NULL,
+                app_version TEXT
             )
             """
         )
@@ -53,11 +54,13 @@ class RecordStore:
                 channel_id INTEGER NOT NULL,
                 kind TEXT NOT NULL,
                 pattern TEXT NOT NULL,
-                parts_json TEXT NOT NULL
+                parts_json TEXT NOT NULL,
+                app_version TEXT
             )
             """
         )
         self._migrate_add_tanka_columns()
+        self._migrate_add_app_version_column()
         self._conn.commit()
 
     def _migrate_add_tanka_columns(self) -> None:
@@ -72,6 +75,23 @@ class RecordStore:
         if "part5" not in columns:
             self._conn.execute("ALTER TABLE records ADD COLUMN part5 TEXT")
 
+    def _migrate_add_app_version_column(self) -> None:
+        """app_version 列が無い時代に作成された既存 DB に app_version 列を追加する。
+
+        CREATE TABLE IF NOT EXISTS は既存テーブルに新規列を追加しないため、
+        旧スキーマの DB ファイルに対してはこのマイグレーションが必要。
+        マイグレーション前に挿入された既存レコードの app_version は NULL の
+        ままとなる(遡及付与はスコープ外)。
+        """
+        records_columns = {row[1] for row in self._conn.execute("PRAGMA table_info(records)")}
+        if "app_version" not in records_columns:
+            self._conn.execute("ALTER TABLE records ADD COLUMN app_version TEXT")
+        chain_records_columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(chain_records)")
+        }
+        if "app_version" not in chain_records_columns:
+            self._conn.execute("ALTER TABLE chain_records ADD COLUMN app_version TEXT")
+
     def add_record(
         self,
         *,
@@ -81,6 +101,7 @@ class RecordStore:
         message_id: int,
         parts: tuple[str, ...],
         morphemes: list[Morpheme],
+        app_version: str,
     ) -> None:
         """検出した川柳・短歌を1件記録する。
 
@@ -91,6 +112,7 @@ class RecordStore:
             message_id: 検出元メッセージの ID。
             parts: 各パートのテキスト。川柳(3要素)または短歌(5要素)。
             morphemes: 採用された部分に対応する形態素のリスト。
+            app_version: 検出時に稼働していた discord-575-sniper のバージョン。
         """
         detected_at = datetime.now(timezone.utc).isoformat()
         morphemes_json = json.dumps(
@@ -112,8 +134,8 @@ class RecordStore:
                 """
                 INSERT INTO records (
                     detected_at, guild_id, channel_id, user_id, message_id,
-                    part1, part2, part3, part4, part5, morphemes_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    part1, part2, part3, part4, part5, morphemes_json, app_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     detected_at,
@@ -127,6 +149,7 @@ class RecordStore:
                     part4,
                     part5,
                     morphemes_json,
+                    app_version,
                 ),
             )
             self._conn.commit()
@@ -139,6 +162,7 @@ class RecordStore:
         kind: str,
         pattern: tuple[int, ...],
         parts: list[ChainEntry],
+        app_version: str,
     ) -> None:
         """複数メッセージ結合により検出した川柳(独吟・連歌)を1件記録する。
 
@@ -149,6 +173,7 @@ class RecordStore:
             pattern: 一致したモーラ数パターン(現時点では常に (5, 7, 5)。
                 将来の拡張に備え固定値ではなく引数として受け取る)。
             parts: 一致した各パート(ChainEntry のリスト、3件)。
+            app_version: 検出時に稼働していた discord-575-sniper のバージョン。
         """
         detected_at = datetime.now(timezone.utc).isoformat()
         pattern_str = "-".join(str(n) for n in pattern)
@@ -168,10 +193,10 @@ class RecordStore:
             self._conn.execute(
                 """
                 INSERT INTO chain_records (
-                    detected_at, guild_id, channel_id, kind, pattern, parts_json
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    detected_at, guild_id, channel_id, kind, pattern, parts_json, app_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (detected_at, guild_id, channel_id, kind, pattern_str, parts_json),
+                (detected_at, guild_id, channel_id, kind, pattern_str, parts_json, app_version),
             )
             self._conn.commit()
 

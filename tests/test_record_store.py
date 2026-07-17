@@ -24,19 +24,20 @@ def test_add_record_inserts_row(tmp_path):
         message_id=4000,
         parts=("古池や", "蛙飛び込む", "水の音"),
         morphemes=morphemes,
+        app_version="1.0.0",
     )
 
     conn = sqlite3.connect(db_path)
     row = conn.execute(
         "SELECT guild_id, channel_id, user_id, message_id, part1, part2, part3, "
-        "morphemes_json, detected_at FROM records"
+        "morphemes_json, detected_at, app_version FROM records"
     ).fetchone()
     conn.close()
 
     assert row is not None
     (
         guild_id, channel_id, user_id, message_id,
-        part1, part2, part3, morphemes_json, detected_at,
+        part1, part2, part3, morphemes_json, detected_at, app_version,
     ) = row
     assert guild_id == 1000
     assert channel_id == 2000
@@ -46,6 +47,7 @@ def test_add_record_inserts_row(tmp_path):
     assert part2 == "蛙飛び込む"
     assert part3 == "水の音"
     assert detected_at != ""
+    assert app_version == "1.0.0"
 
     decoded = json.loads(morphemes_json)
     assert decoded == [
@@ -66,6 +68,7 @@ def test_add_record_multiple_rows_accumulate(tmp_path):
             message_id=100 + i,
             parts=("a", "b", "c"),
             morphemes=[],
+            app_version="1.0.0",
         )
 
     conn = sqlite3.connect(db_path)
@@ -80,7 +83,7 @@ def test_persists_across_instances(tmp_path):
     store1 = RecordStore(db_path)
     store1.add_record(
         guild_id=1, channel_id=2, user_id=3, message_id=4,
-        parts=("a", "b", "c"), morphemes=[],
+        parts=("a", "b", "c"), morphemes=[], app_version="1.0.0",
     )
 
     store2 = RecordStore(db_path)
@@ -104,6 +107,7 @@ def test_add_record_inserts_five_part_row_for_tanka(tmp_path):
         message_id=4000,
         parts=("古池や", "蛙飛び込む", "水の音", "やまぶきのえだ", "うめがかがやく"),
         morphemes=[],
+        app_version="1.0.0",
     )
 
     conn = sqlite3.connect(db_path)
@@ -122,7 +126,7 @@ def test_add_record_sets_part4_and_part5_null_for_senryu(tmp_path):
 
     store.add_record(
         guild_id=1, channel_id=2, user_id=3, message_id=4,
-        parts=("古池や", "蛙飛び込む", "水の音"), morphemes=[],
+        parts=("古池や", "蛙飛び込む", "水の音"), morphemes=[], app_version="1.0.0",
     )
 
     conn = sqlite3.connect(db_path)
@@ -160,7 +164,7 @@ def test_add_record_migrates_legacy_three_column_schema(tmp_path):
     store = RecordStore(db_path)
     store.add_record(
         guild_id=1, channel_id=2, user_id=3, message_id=4,
-        parts=("あ", "い", "う", "え", "お"), morphemes=[],
+        parts=("あ", "い", "う", "え", "お"), morphemes=[], app_version="1.0.0",
     )
 
     conn = sqlite3.connect(db_path)
@@ -181,6 +185,7 @@ def test_add_chain_record_inserts_senryu_row(tmp_path):
 
     store.add_chain_record(
         guild_id=1000, channel_id=2000, kind="独吟", pattern=(5, 7, 5), parts=parts,
+        app_version="1.0.0",
     )
 
     conn = sqlite3.connect(db_path)
@@ -218,6 +223,7 @@ def test_add_chain_record_formats_arbitrary_pattern_tuple_as_string(tmp_path):
 
     store.add_chain_record(
         guild_id=1, channel_id=2, kind="連歌", pattern=(5, 7, 5, 7, 7), parts=parts,
+        app_version="1.0.0",
     )
 
     conn = sqlite3.connect(db_path)
@@ -238,6 +244,7 @@ def test_add_chain_record_multiple_rows_accumulate(tmp_path):
     for _ in range(3):
         store.add_chain_record(
             guild_id=1, channel_id=2, kind="独吟", pattern=(5, 7, 5), parts=parts,
+            app_version="1.0.0",
         )
 
     conn = sqlite3.connect(db_path)
@@ -262,7 +269,7 @@ def test_pick_random_part_returns_text_and_user_id(tmp_path):
     store = RecordStore(db_path)
     store.add_record(
         guild_id=1, channel_id=2000, user_id=9999, message_id=1,
-        parts=("古池や", "蛙飛び込む", "水の音"), morphemes=[],
+        parts=("古池や", "蛙飛び込む", "水の音"), morphemes=[], app_version="1.0.0",
     )
 
     result = store.pick_random_part(channel_id=2000, column="part1")
@@ -276,7 +283,7 @@ def test_pick_random_part_filters_by_channel_id(tmp_path):
     store = RecordStore(db_path)
     store.add_record(
         guild_id=1, channel_id=3000, user_id=1, message_id=1,
-        parts=("あ", "い", "う"), morphemes=[],
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
     )
 
     result = store.pick_random_part(channel_id=2000, column="part1")
@@ -292,7 +299,7 @@ def test_pick_random_part_without_require_tanka_includes_senryu_records(tmp_path
     store = RecordStore(db_path)
     store.add_record(
         guild_id=1, channel_id=2000, user_id=1, message_id=1,
-        parts=("あ", "い", "う"), morphemes=[],
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
     )
 
     result = store.pick_random_part(channel_id=2000, column="part2")
@@ -306,7 +313,7 @@ def test_pick_random_part_require_tanka_excludes_senryu_records(tmp_path):
     store = RecordStore(db_path)
     store.add_record(
         guild_id=1, channel_id=2000, user_id=1, message_id=1,
-        parts=("あ", "い", "う"), morphemes=[],
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
     )
 
     result = store.pick_random_part(channel_id=2000, column="part4", require_tanka=True)
@@ -322,7 +329,7 @@ def test_pick_random_part_require_tanka_includes_tanka_records(tmp_path):
     store = RecordStore(db_path)
     store.add_record(
         guild_id=1, channel_id=2000, user_id=42, message_id=1,
-        parts=("あ", "い", "う", "え", "お"), morphemes=[],
+        parts=("あ", "い", "う", "え", "お"), morphemes=[], app_version="1.0.0",
     )
 
     result = store.pick_random_part(channel_id=2000, column="part4", require_tanka=True)
@@ -337,3 +344,124 @@ def test_pick_random_part_rejects_invalid_column(tmp_path):
 
     with pytest.raises(ValueError):
         store.pick_random_part(channel_id=2000, column="part6")
+
+
+def test_add_chain_record_inserts_app_version(tmp_path):
+    """add_chain_record が app_version を正しく保存することを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    parts = [
+        ChainEntry(text="古池や", user_id=1, message_id=10, mora=5, timestamp=0.0),
+        ChainEntry(text="蛙飛び込む", user_id=1, message_id=11, mora=7, timestamp=1.0),
+        ChainEntry(text="水の音", user_id=1, message_id=12, mora=5, timestamp=2.0),
+    ]
+
+    store.add_chain_record(
+        guild_id=1000, channel_id=2000, kind="独吟", pattern=(5, 7, 5), parts=parts,
+        app_version="2.0.0",
+    )
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT app_version FROM chain_records").fetchone()
+    conn.close()
+    assert row == ("2.0.0",)
+
+
+def test_add_record_migrates_legacy_schema_without_app_version_column(tmp_path):
+    """app_version 列がない旧スキーマの DB ファイルを開いても、records・chain_records
+    両テーブルへのマイグレーションにより app_version 付きの記録が成功することを確認する。
+    """
+    db_path = str(tmp_path / "records.db")
+    legacy_conn = sqlite3.connect(db_path)
+    legacy_conn.execute(
+        """
+        CREATE TABLE records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at TEXT NOT NULL,
+            guild_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            part1 TEXT NOT NULL,
+            part2 TEXT NOT NULL,
+            part3 TEXT NOT NULL,
+            part4 TEXT,
+            part5 TEXT,
+            morphemes_json TEXT NOT NULL
+        )
+        """
+    )
+    legacy_conn.execute(
+        """
+        CREATE TABLE chain_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at TEXT NOT NULL,
+            guild_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            pattern TEXT NOT NULL,
+            parts_json TEXT NOT NULL
+        )
+        """
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    store = RecordStore(db_path)
+    store.add_record(
+        guild_id=1, channel_id=2, user_id=3, message_id=4,
+        parts=("あ", "い", "う"), morphemes=[], app_version="3.0.0",
+    )
+    store.add_chain_record(
+        guild_id=1, channel_id=2, kind="独吟", pattern=(5, 7, 5),
+        parts=[ChainEntry(text="あ", user_id=3, message_id=4, mora=5, timestamp=0.0)],
+        app_version="3.0.0",
+    )
+
+    conn = sqlite3.connect(db_path)
+    records_row = conn.execute("SELECT app_version FROM records").fetchone()
+    chain_records_row = conn.execute("SELECT app_version FROM chain_records").fetchone()
+    conn.close()
+    assert records_row == ("3.0.0",)
+    assert chain_records_row == ("3.0.0",)
+
+
+def test_add_record_leaves_pre_migration_rows_app_version_null(tmp_path):
+    """マイグレーション前に挿入された既存レコードの app_version は
+    NULL のまま残ることを確認する(遡及付与はスコープ外)。
+    """
+    db_path = str(tmp_path / "records.db")
+    legacy_conn = sqlite3.connect(db_path)
+    legacy_conn.execute(
+        """
+        CREATE TABLE records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at TEXT NOT NULL,
+            guild_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            part1 TEXT NOT NULL,
+            part2 TEXT NOT NULL,
+            part3 TEXT NOT NULL,
+            part4 TEXT,
+            part5 TEXT,
+            morphemes_json TEXT NOT NULL
+        )
+        """
+    )
+    legacy_conn.execute(
+        "INSERT INTO records (detected_at, guild_id, channel_id, user_id, message_id, "
+        "part1, part2, part3, morphemes_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("2020-01-01T00:00:00+00:00", 1, 2, 3, 4, "あ", "い", "う", "[]"),
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    # RecordStore を開くだけでマイグレーションが走る(add_record は呼ばない)。
+    RecordStore(db_path)
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT app_version FROM records WHERE message_id = 4").fetchone()
+    conn.close()
+    assert row == (None,)
