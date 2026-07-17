@@ -251,6 +251,30 @@ def test_message_with_unknown_mora_word_resets_chain():
     assert result is None
 
 
+def test_chain_entry_text_strips_zero_mora_symbol():
+    """ChainEntry.text がメッセージ全文ではなく、mora=0(記号・空白)の
+    形態素を除いた表層文字列になっていることを確認する。"""
+    tracker = ChainTracker()
+    tracker.process_message(
+        channel_id=1, user_id=100, message_id=1, text="古池や",
+        morphemes=_morphemes("古池や", 5), now=0.0,
+    )
+    morphemes = [
+        Morpheme(surface="かきくけこさし", reading="", mora=7, start=0, end=7, pos="名詞"),
+        Morpheme(surface="、", reading="", mora=0, start=7, end=8, pos="補助記号"),
+    ]
+    tracker.process_message(
+        channel_id=1, user_id=100, message_id=2, text="かきくけこさし、",
+        morphemes=morphemes, now=1.0,
+    )
+    result = tracker.process_message(
+        channel_id=1, user_id=100, message_id=3, text="水の音",
+        morphemes=_morphemes("水の音", 5), now=2.0,
+    )
+    assert result is not None
+    assert [p.text for p in result.parts] == ["古池や", "かきくけこさし", "水の音"]
+
+
 def test_channels_are_isolated():
     """チャンネルが異なればチェーンが独立して管理されることを確認する。"""
     tracker = ChainTracker()

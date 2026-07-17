@@ -17,6 +17,7 @@ class ChainEntry:
     """チェーンに保持する1件分のメッセージ情報。"""
 
     text: str
+    """mora=0(記号・空白)の形態素を除いた表層文字列。メッセージ全文そのものではない。"""
     user_id: int
     message_id: int
     mora: int
@@ -99,17 +100,19 @@ class ChainTracker:
             chain = []
 
         mora = total_mora(morphemes)
-        if (
-            mora not in (5, 7)
-            or not can_start_part(morphemes[0])
-            or has_unknown_mora_word(morphemes)
-        ):
+        is_valid_mora = mora in (5, 7)
+        starts_valid_part = can_start_part(morphemes[0])
+        has_unknown_word = has_unknown_mora_word(morphemes)
+        if not is_valid_mora or not starts_valid_part or has_unknown_word:
             self._store(channel_id, [])
             return None
 
+        # has_unknown_mora_word() のチェックを通過済みのため、ここで残る
+        # mora=0 形態素は記号・空白品詞のみであることが保証されている。
+        filtered_text = "".join(m.surface for m in morphemes if m.mora > 0)
         chain = chain + [
             ChainEntry(
-                text=text, user_id=user_id, message_id=message_id,
+                text=filtered_text, user_id=user_id, message_id=message_id,
                 mora=mora, timestamp=now,
             )
         ]
