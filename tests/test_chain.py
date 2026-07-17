@@ -224,6 +224,33 @@ def test_long_chain_of_non_matching_entries_then_matches():
     assert [p.mora for p in result.parts] == [5, 7, 5]
 
 
+def test_message_with_unknown_mora_word_resets_chain():
+    """未知語(非記号品詞の mora=0)を含むメッセージは、モーラ数が5・7に合致していても
+    チェーンをリセットして None を返すことを確認する(false positive 防止)。"""
+    tracker = ChainTracker()
+    tracker.process_message(
+        channel_id=1, user_id=100, message_id=1, text="古池や",
+        morphemes=_morphemes("古池や", 5), now=0.0,
+    )
+    morphemes = [
+        Morpheme(surface="Vlog", reading="", mora=0, start=0, end=4, pos="名詞"),
+        Morpheme(surface="かきくけこさし", reading="", mora=7, start=4, end=11, pos="名詞"),
+    ]
+    result = tracker.process_message(
+        channel_id=1, user_id=100, message_id=2, text="Vlogかきくけこさし",
+        morphemes=morphemes, now=1.0,
+    )
+    assert result is None
+    # ガードがなければ古池や(5)・Vlogかきくけこさし(7)・水の音(5)で5-7-5が
+    # 成立してしまうが、ガードにより2件目でチェーンがリセットされているため
+    # None になることを確認する。
+    result = tracker.process_message(
+        channel_id=1, user_id=100, message_id=3, text="水の音",
+        morphemes=_morphemes("水の音", 5), now=2.0,
+    )
+    assert result is None
+
+
 def test_channels_are_isolated():
     """チャンネルが異なればチェーンが独立して管理されることを確認する。"""
     tracker = ChainTracker()

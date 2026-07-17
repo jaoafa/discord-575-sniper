@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from .finder import SENRYU_PATTERN, can_start_part
+from .finder import SENRYU_PATTERN, can_start_part, has_unknown_mora_word
 from .mora import total_mora
 from .tokenizer import Morpheme
 
@@ -87,7 +87,7 @@ class ChainTracker:
             user_id: メッセージ投稿者の ID。
             message_id: メッセージの ID。
             text: サニタイズ済みのメッセージ本文。
-            morphemes: text を形態素解析した結果。総モーラ数の算出と、先頭形態素が付属語(助詞・助動詞など)でないかの判定(can_start_part())に使う。
+            morphemes: text を形態素解析した結果。総モーラ数の算出、先頭形態素が付属語(助詞・助動詞など)でないかの判定(can_start_part())、および未知語(非記号品詞の mora=0 形態素)を含まないかの判定(has_unknown_mora_word())に使う。
             now: 現在時刻を表す単調増加する秒数(例: time.monotonic())。
                 呼び出し側から注入することでテスト時に任意の時刻を扱える。
 
@@ -99,7 +99,11 @@ class ChainTracker:
             chain = []
 
         mora = total_mora(morphemes)
-        if mora not in (5, 7) or not can_start_part(morphemes[0]):
+        if (
+            mora not in (5, 7)
+            or not can_start_part(morphemes[0])
+            or has_unknown_mora_word(morphemes)
+        ):
             self._store(channel_id, [])
             return None
 
