@@ -38,12 +38,7 @@ def test_tokenize_sets_pos():
 
 
 def test_tokenize_space_morpheme_has_zero_mora():
-    """空白形態素(pos="空白")のモーラ数が0として扱われることを確認する。
-
-    SudachiPyはスペースを reading="キゴウ" としてトークナイズするため、
-    count_mora() をそのまま適用すると3モーラとして誤加算されてしまう
-    (Issue #8)。
-    """
+    """空白形態素(pos="空白")のモーラ数が0として扱われることを確認する(Issue #8)。"""
     morphemes = tokenize("並べる。 それだけで、")
     space_morphemes = [m for m in morphemes if m.pos == "空白"]
     assert space_morphemes, "expected at least one space morpheme"
@@ -51,12 +46,7 @@ def test_tokenize_space_morpheme_has_zero_mora():
 
 
 def test_tokenize_placeholder_symbol_has_zero_mora():
-    """読みが不明な補助記号(→★○♡など)のモーラ数が0として扱われることを確認する。
-
-    空白と同様、SudachiPyはこれらの記号にも reading="キゴウ" という
-    汎用プレースホルダーを返すため、count_mora() をそのまま適用すると
-    3モーラとして誤加算されてしまう。
-    """
+    """読みが不明な補助記号(→★○♡など)のモーラ数が0として扱われることを確認する。"""
     for symbol in "→★○♡":
         morphemes = tokenize(f"好き{symbol}です")
         symbol_morphemes = [m for m in morphemes if m.surface == symbol]
