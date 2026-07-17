@@ -120,6 +120,34 @@ async def handle_status(config_store: ConfigStore, channel_id: int, parent_id: i
     return f"このチャンネルの川柳検出は現在「{state}」です。"
 
 
+_REMIX_PARTS: tuple[tuple[str, bool], ...] = (
+    ("part1", False),
+    ("part2", False),
+    ("part3", False),
+    ("part4", True),
+    ("part5", True),
+)
+
+
+async def handle_remix(record_store: RecordStore, channel_id: int) -> str:
+    """このチャンネルの過去記録からランダムに5句を選び、新しい短歌を合成した
+    返信メッセージを組み立てる。素材が足りない場合はエラーメッセージを返す。
+    """
+    picks: list[tuple[str, int]] = []
+    for column, require_tanka in _REMIX_PARTS:
+        pick = await asyncio.to_thread(
+            record_store.pick_random_part,
+            channel_id=channel_id,
+            column=column,
+            require_tanka=require_tanka,
+        )
+        if pick is None:
+            return "このチャンネルには短歌を合成するための素材が足りません。"
+        picks.append(pick)
+    lines = "\n".join(f"> {text} (<@{user_id}>)" for text, user_id in picks)
+    return f"🎋 過去の記録から短歌を合成しました！\n{lines}"
+
+
 def create_bot(
     guild_id: int,
     config_store: ConfigStore,
