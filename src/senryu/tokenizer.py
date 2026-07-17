@@ -6,6 +6,16 @@ from .mora import count_mora
 
 _tokenizer_obj = Dictionary().create()
 
+# SudachiPyは読みを特定できない空白・記号(スペース、→★○♡など)に対して
+# reading="キゴウ"(「記号」のカタカナ表記)という汎用プレースホルダーを返す。
+# これはカタカナ3文字からなるため count_mora() にかけると実際には発音されない
+# はずの1文字が3モーラとして誤加算されてしまう。
+# この現象が起こりうる品詞(空白・補助記号)に限定してプレースホルダー読みを
+# 検出し、モーラ数0として扱う。名詞「記号」(きごう)など実際に読みが
+# "キゴウ"になる正当な語は pos が異なるため対象外。
+_SYMBOL_LIKE_POS = {"空白", "補助記号"}
+_PLACEHOLDER_READING = "キゴウ"
+
 
 @dataclass
 class Morpheme:
@@ -35,14 +45,17 @@ def tokenize(text: str) -> list["Morpheme"]:
     for m in _tokenizer_obj.tokenize(text, SplitMode.C):
         surface = m.surface()
         reading = m.reading_form()
+        pos = m.part_of_speech()[0]
+        is_placeholder_reading = pos in _SYMBOL_LIKE_POS and reading == _PLACEHOLDER_READING
+        mora = 0 if is_placeholder_reading else count_mora(reading)
         morphemes.append(
             Morpheme(
                 surface=surface,
                 reading=reading,
-                mora=count_mora(reading),
+                mora=mora,
                 start=m.begin(),
                 end=m.end(),
-                pos=m.part_of_speech()[0],
+                pos=pos,
             )
         )
     return morphemes
