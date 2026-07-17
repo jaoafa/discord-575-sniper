@@ -99,6 +99,13 @@ class ChainTracker:
         if chain and (now - chain[-1].timestamp) > CHAIN_TIMEOUT_SECONDS:
             chain = []
 
+        # can_start_part() は morphemes[0] にアクセスするため、空リストの場合は
+        # モーラ数チェックより先に弾く(添付ファイルのみ等でサニタイズ後に
+        # 空文字列になったメッセージでは morphemes が空リストになり得る)。
+        if not morphemes:
+            self._store(channel_id, [])
+            return None
+
         mora = total_mora(morphemes)
         is_valid_mora = mora in (5, 7)
         starts_valid_part = can_start_part(morphemes[0])

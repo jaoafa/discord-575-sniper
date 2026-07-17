@@ -275,6 +275,26 @@ def test_chain_entry_text_strips_zero_mora_symbol():
     assert [p.text for p in result.parts] == ["古池や", "かきくけこさし", "水の音"]
 
 
+def test_empty_morphemes_resets_chain_without_raising():
+    """形態素リストが空のメッセージ(添付ファイルのみ等でサニタイズ後に空文字列になった場合)を
+    渡してもエラーにならず、チェーンがリセットされて None を返すことを確認する。"""
+    tracker = ChainTracker()
+    tracker.process_message(
+        channel_id=1, user_id=100, message_id=1, text="古池や",
+        morphemes=_morphemes("古池や", 5), now=0.0,
+    )
+    result = tracker.process_message(
+        channel_id=1, user_id=100, message_id=2, text="",
+        morphemes=[], now=1.0,
+    )
+    assert result is None
+    result = tracker.process_message(
+        channel_id=1, user_id=100, message_id=3, text="水の音",
+        morphemes=_morphemes("水の音", 5), now=2.0,
+    )
+    assert result is None
+
+
 def test_channels_are_isolated():
     """チャンネルが異なればチェーンが独立して管理されることを確認する。"""
     tracker = ChainTracker()

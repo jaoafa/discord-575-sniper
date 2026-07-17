@@ -111,7 +111,9 @@ class RecordStore:
             user_id: 検出元メッセージの投稿者 ID。
             message_id: 検出元メッセージの ID。
             parts: 各パートのテキスト。川柳(3要素)または短歌(5要素)。
-            morphemes: 採用された部分に対応する形態素のリスト。
+                mora=0(記号・空白)の形態素は除去済み。
+            morphemes: 採用された部分に対応する形態素のリスト(フィルタ前)。
+                mora=0 の形態素も含むため、surface を単純結合しても parts とは一致しない。
             app_version: 検出時に稼働していた discord-575-sniper のバージョン。
         """
         detected_at = datetime.now(timezone.utc).isoformat()
