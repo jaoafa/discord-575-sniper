@@ -1,6 +1,8 @@
 import json
 import sqlite3
 
+import pytest
+
 from src.record_store import RecordStore
 from src.senryu.chain import ChainEntry
 from src.senryu.tokenizer import Morpheme
@@ -242,3 +244,96 @@ def test_add_chain_record_multiple_rows_accumulate(tmp_path):
     count = conn.execute("SELECT COUNT(*) FROM chain_records").fetchone()[0]
     conn.close()
     assert count == 3
+
+
+def test_pick_random_part_returns_none_when_no_records(tmp_path):
+    """対象チャンネルにレコードが1件も無ければ None を返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+
+    result = store.pick_random_part(channel_id=2000, column="part1")
+
+    assert result is None
+
+
+def test_pick_random_part_returns_text_and_user_id(tmp_path):
+    """レコードが存在する場合、指定列のテキストと投稿者 user_id を返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.add_record(
+        guild_id=1, channel_id=2000, user_id=9999, message_id=1,
+        parts=("古池や", "蛙飛び込む", "水の音"), morphemes=[],
+    )
+
+    result = store.pick_random_part(channel_id=2000, column="part1")
+
+    assert result == ("古池や", 9999)
+
+
+def test_pick_random_part_filters_by_channel_id(tmp_path):
+    """他チャンネルのレコードは対象にならないことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.add_record(
+        guild_id=1, channel_id=3000, user_id=1, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[],
+    )
+
+    result = store.pick_random_part(channel_id=2000, column="part1")
+
+    assert result is None
+
+
+def test_pick_random_part_without_require_tanka_includes_senryu_records(tmp_path):
+    """require_tanka=False(デフォルト)では川柳由来レコード(part4 が NULL)も
+    part1〜part3 の取得対象に含まれることを確認する。
+    """
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.add_record(
+        guild_id=1, channel_id=2000, user_id=1, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[],
+    )
+
+    result = store.pick_random_part(channel_id=2000, column="part2")
+
+    assert result == ("い", 1)
+
+
+def test_pick_random_part_require_tanka_excludes_senryu_records(tmp_path):
+    """require_tanka=True では川柳由来レコード(part4 が NULL)が除外されることを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.add_record(
+        guild_id=1, channel_id=2000, user_id=1, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[],
+    )
+
+    result = store.pick_random_part(channel_id=2000, column="part4", require_tanka=True)
+
+    assert result is None
+
+
+def test_pick_random_part_require_tanka_includes_tanka_records(tmp_path):
+    """require_tanka=True では短歌由来レコード(part4/part5 が NOT NULL)から
+    part4/part5 を取得できることを確認する。
+    """
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.add_record(
+        guild_id=1, channel_id=2000, user_id=42, message_id=1,
+        parts=("あ", "い", "う", "え", "お"), morphemes=[],
+    )
+
+    result = store.pick_random_part(channel_id=2000, column="part4", require_tanka=True)
+
+    assert result == ("え", 42)
+
+
+def test_pick_random_part_rejects_invalid_column(tmp_path):
+    """許可外の列名を渡すと ValueError を送出することを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+
+    with pytest.raises(ValueError):
+        store.pick_random_part(channel_id=2000, column="part6")

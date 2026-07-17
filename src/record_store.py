@@ -174,3 +174,36 @@ class RecordStore:
                 (detected_at, guild_id, channel_id, kind, pattern_str, parts_json),
             )
             self._conn.commit()
+
+    _PICKABLE_COLUMNS = frozenset({"part1", "part2", "part3", "part4", "part5"})
+
+    def pick_random_part(
+        self, *, channel_id: int, column: str, require_tanka: bool = False
+    ) -> tuple[str, int] | None:
+        """指定チャンネルの records からランダムに1句を選ぶ。
+
+        Args:
+            channel_id: 対象チャンネルの ID。
+            column: 取得する列名("part1"〜"part5" のいずれか)。
+            require_tanka: True の場合、part4 が NOT NULL のレコード
+                (短歌として検出されたレコード)のみを対象にする。
+
+        Returns:
+            (句のテキスト, 投稿者 user_id) のタプル。対象レコードが
+            1件も無い場合は None。
+
+        Raises:
+            ValueError: column が許可された列名集合に含まれない場合。
+        """
+        if column not in self._PICKABLE_COLUMNS:
+            raise ValueError(f"invalid column: {column!r}")
+        query = f"SELECT {column}, user_id FROM records WHERE channel_id = ?"
+        params: list[object] = [channel_id]
+        if require_tanka:
+            query += " AND part4 IS NOT NULL"
+        query += " ORDER BY RANDOM() LIMIT 1"
+        with self._lock:
+            row = self._conn.execute(query, params).fetchone()
+        if row is None:
+            return None
+        return (row[0], row[1])
