@@ -1,3 +1,8 @@
+from typing import TYPE_CHECKING, Sequence
+
+if TYPE_CHECKING:
+    from .tokenizer import Morpheme
+
 _SMALL_KANA = set("ャュョァィゥェォ")
 
 # カタカナ(全角)の Unicode 範囲。ー(長音記号, U+30FC)もこの範囲に含まれる。
@@ -33,3 +38,12 @@ def count_mora(reading: str) -> int:
             continue
         count += 1
     return count
+
+
+def total_mora(morphemes: "Sequence[Morpheme]") -> int:
+    """形態素列全体の総モーラ数を求める。
+
+    各形態素の mora フィールド(tokenize() が count_mora() で算出済み)を
+    合算するだけで、読み文字列を再解析しない。
+    """
+    return sum(m.mora for m in morphemes)
