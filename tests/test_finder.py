@@ -154,3 +154,35 @@ def test_pick_best_prefers_fewer_morphemes_on_tie_length():
 def test_pick_best_returns_none_for_empty_list():
     """候補リストが空の場合 pick_best が None を返すことを確認する。"""
     assert pick_best([]) is None
+
+
+def test_find_candidates_excludes_window_containing_unknown_mora_word():
+    """未知語などで mora=0 になった名詞を含む区間は、モーラ不足を補って
+    5-7-5 に収まってしまっても候補から除外されることを確認する。"""
+    morphemes = [
+        _m("あいうえお", 5, 0, 5, pos="名詞"),
+        _m("かきくけこさし", 7, 5, 12, pos="名詞"),
+        _m("Vlog", 0, 12, 16, pos="名詞"),  # 読みが取得できず mora=0 の未知語
+        _m("たちつてと", 5, 16, 21, pos="名詞"),
+    ]
+    text = "あいうえおかきくけこさしVlogたちつてと"
+    candidates = find_candidates(morphemes, text)
+    assert candidates == []
+
+
+def test_find_candidates_allows_window_containing_zero_mora_symbol():
+    """補助記号・空白による mora=0 は既存どおり除外対象にならないことを確認する。
+
+    空白は can_start_part() によりパート先頭になれないため、
+    直前のパートに取り込まれた形で候補が成立する。
+    """
+    morphemes = [
+        _m("あいうえお", 5, 0, 5, pos="名詞"),
+        _m("かきくけこさし", 7, 5, 12, pos="名詞"),
+        _m("　", 0, 12, 13, pos="空白"),
+        _m("たちつてと", 5, 13, 18, pos="名詞"),
+    ]
+    text = "あいうえおかきくけこさし　たちつてと"
+    candidates = find_candidates(morphemes, text)
+    assert len(candidates) == 1
+    assert candidates[0].parts == ("あいうえお", "かきくけこさし　", "たちつてと")

@@ -8,6 +8,13 @@ from .tokenizer import Morpheme
 # ぶった切っているだけなので候補から除外する。
 _NON_STARTING_POS = {"助詞", "助動詞", "接尾辞", "補助記号", "空白"}
 
+# mora=0 は本来「補助記号」「空白」(記号・プレースホルダー読み)でのみ発生する想定だが、
+# 未知語(英単語など)や非日本語文字は読みが取得できず同じく mora=0 になる。
+# これらは prefix sum 上で透明な存在として扱われ、モーラ不足を補って
+# 5-7-5 に収まってしまう false positive の原因になるため、
+# この品詞集合に含まれない mora=0 形態素を含む候補は除外する。
+_ZERO_MORA_IGNORE_POS = {"補助記号", "空白"}
+
 # find_candidates が探索する音数パターン(各要素は1パートあたりのモーラ数)。
 SENRYU_PATTERN: tuple[int, ...] = (5, 7, 5)
 TANKA_PATTERN: tuple[int, ...] = (5, 7, 5, 7, 7)
@@ -21,6 +28,14 @@ def can_start_part(m: Morpheme) -> bool:
     両方から使う共通の判定なので、モジュール非公開名にしていない。
     """
     return m.pos not in _NON_STARTING_POS
+
+
+def _has_unknown_mora_word(morphemes: list[Morpheme]) -> bool:
+    """読みが取得できず mora=0 になった、記号・空白以外の形態素が含まれるかを判定する。"""
+    return any(
+        m.mora == 0 and m.pos not in _ZERO_MORA_IGNORE_POS
+        for m in morphemes
+    )
 
 
 @dataclass
@@ -58,6 +73,8 @@ def _find_from(
     """
     if not remaining_pattern:
         idxs = part_starts + [start]
+        if _has_unknown_mora_word(morphemes[idxs[0]:idxs[-1]]):
+            return []
         parts = tuple(
             text[morphemes[idxs[i]].start:morphemes[idxs[i + 1] - 1].end]
             for i in range(len(idxs) - 1)
