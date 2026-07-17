@@ -2,6 +2,7 @@ import json
 import sqlite3
 
 from src.record_store import RecordStore
+from src.senryu.chain import ChainEntry
 from src.senryu.tokenizer import Morpheme
 
 
@@ -164,3 +165,80 @@ def test_add_record_migrates_legacy_three_column_schema(tmp_path):
     row = conn.execute("SELECT part1, part2, part3, part4, part5 FROM records").fetchone()
     conn.close()
     assert row == ("あ", "い", "う", "え", "お")
+
+
+def test_add_chain_record_inserts_senryu_row(tmp_path):
+    """add_chain_record が独吟・連歌(川柳パターン)の行を正しい値で INSERT することを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    parts = [
+        ChainEntry(text="古池や", user_id=1, message_id=10, mora=5, timestamp=0.0),
+        ChainEntry(text="蛙飛び込む", user_id=1, message_id=11, mora=7, timestamp=1.0),
+        ChainEntry(text="水の音", user_id=1, message_id=12, mora=5, timestamp=2.0),
+    ]
+
+    store.add_chain_record(
+        guild_id=1000, channel_id=2000, kind="独吟", pattern=(5, 7, 5), parts=parts,
+    )
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT guild_id, channel_id, kind, pattern, parts_json, detected_at FROM chain_records"
+    ).fetchone()
+    conn.close()
+
+    assert row is not None
+    guild_id, channel_id, kind, pattern, parts_json, detected_at = row
+    assert guild_id == 1000
+    assert channel_id == 2000
+    assert kind == "独吟"
+    assert pattern == "5-7-5"
+    assert detected_at != ""
+    decoded = json.loads(parts_json)
+    assert decoded == [
+        {"text": "古池や", "user_id": 1, "message_id": 10, "mora": 5},
+        {"text": "蛙飛び込む", "user_id": 1, "message_id": 11, "mora": 7},
+        {"text": "水の音", "user_id": 1, "message_id": 12, "mora": 5},
+    ]
+
+
+def test_add_chain_record_formats_arbitrary_pattern_tuple_as_string(tmp_path):
+    """pattern 引数に渡した任意長のタプルが "-" 区切りの文字列として保存されることを
+    確認する(add_chain_record 自体はパターンの長さに依存しない汎用実装であることの
+    確認。ChainTracker からは現時点では (5, 7, 5) のみが渡される)。
+    """
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    parts = [
+        ChainEntry(text=f"part{i}", user_id=1, message_id=i, mora=m, timestamp=float(i))
+        for i, m in enumerate([5, 7, 5, 7, 7])
+    ]
+
+    store.add_chain_record(
+        guild_id=1, channel_id=2, kind="連歌", pattern=(5, 7, 5, 7, 7), parts=parts,
+    )
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT pattern FROM chain_records").fetchone()
+    conn.close()
+    assert row == ("5-7-5-7-7",)
+
+
+def test_add_chain_record_multiple_rows_accumulate(tmp_path):
+    """複数回 add_chain_record を呼ぶと全件が蓄積されることを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    parts = [
+        ChainEntry(text="a", user_id=1, message_id=1, mora=5, timestamp=0.0),
+        ChainEntry(text="b", user_id=1, message_id=2, mora=7, timestamp=1.0),
+        ChainEntry(text="c", user_id=1, message_id=3, mora=5, timestamp=2.0),
+    ]
+    for _ in range(3):
+        store.add_chain_record(
+            guild_id=1, channel_id=2, kind="独吟", pattern=(5, 7, 5), parts=parts,
+        )
+
+    conn = sqlite3.connect(db_path)
+    count = conn.execute("SELECT COUNT(*) FROM chain_records").fetchone()[0]
+    conn.close()
+    assert count == 3

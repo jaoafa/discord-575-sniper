@@ -3,6 +3,7 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 
+from .senryu.chain import ChainEntry
 from .senryu.tokenizer import Morpheme
 
 
@@ -40,6 +41,19 @@ class RecordStore:
                 part4 TEXT,
                 part5 TEXT,
                 morphemes_json TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chain_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                detected_at TEXT NOT NULL,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                pattern TEXT NOT NULL,
+                parts_json TEXT NOT NULL
             )
             """
         )
@@ -114,5 +128,49 @@ class RecordStore:
                     part5,
                     morphemes_json,
                 ),
+            )
+            self._conn.commit()
+
+    def add_chain_record(
+        self,
+        *,
+        guild_id: int,
+        channel_id: int,
+        kind: str,
+        pattern: tuple[int, ...],
+        parts: list[ChainEntry],
+    ) -> None:
+        """複数メッセージ結合により検出した川柳(独吟・連歌)を1件記録する。
+
+        Args:
+            guild_id: 検出元メッセージ群が投稿されたギルドの ID。
+            channel_id: 検出元メッセージ群が投稿されたチャンネルの ID。
+            kind: "独吟" または "連歌"。
+            pattern: 一致したモーラ数パターン(現時点では常に (5, 7, 5)。
+                将来の拡張に備え固定値ではなく引数として受け取る)。
+            parts: 一致した各パート(ChainEntry のリスト、3件)。
+        """
+        detected_at = datetime.now(timezone.utc).isoformat()
+        pattern_str = "-".join(str(n) for n in pattern)
+        parts_json = json.dumps(
+            [
+                {
+                    "text": p.text,
+                    "user_id": p.user_id,
+                    "message_id": p.message_id,
+                    "mora": p.mora,
+                }
+                for p in parts
+            ],
+            ensure_ascii=False,
+        )
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO chain_records (
+                    detected_at, guild_id, channel_id, kind, pattern, parts_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (detected_at, guild_id, channel_id, kind, pattern_str, parts_json),
             )
             self._conn.commit()
