@@ -8,6 +8,12 @@ ENV TZ=Asia/Tokyo
 
 WORKDIR /app
 
+# CI(reusable-docker.yml)が渡す build-arg を実行時の環境変数として引き継ぐ。
+# ARG は素の状態ではビルド時にしか参照できないため、ENV に代入してコンテナ
+# 実行時にも src/version.py から os.environ 経由で参照可能にする。
+ARG APPLICATION_VERSION
+ENV APPLICATION_VERSION=${APPLICATION_VERSION}
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
