@@ -95,6 +95,7 @@ async def test_handle_remix_composes_tanka_from_records(record_store):
     record_store.add_record(
         guild_id=1, channel_id=111, user_id=42, message_id=1,
         parts=("あ", "い", "う", "え", "お"), morphemes=[],
+        app_version="1.0.0",
     )
 
     message = await handle_remix(record_store, channel_id=111)
@@ -125,6 +126,7 @@ async def test_handle_remix_reports_shortage_when_no_tanka_records(record_store)
     record_store.add_record(
         guild_id=1, channel_id=111, user_id=1, message_id=1,
         parts=("あ", "い", "う"), morphemes=[],
+        app_version="1.0.0",
     )
 
     message = await handle_remix(record_store, channel_id=111)

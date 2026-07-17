@@ -12,6 +12,7 @@ from .senryu.chain import ChainMatch, ChainTracker
 from .senryu.finder import Candidate, find_candidates, pick_best
 from .senryu.preprocess import sanitize_text
 from .senryu.tokenizer import Morpheme, tokenize
+from .version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,7 @@ def create_bot(
                         message_id=message.id,
                         parts=detection.candidate.parts,
                         morphemes=detection.morphemes,
+                        app_version=__version__,
                     )
                 except Exception:
                     logger.exception("川柳の記録に失敗しました。")
@@ -264,6 +266,7 @@ def create_bot(
                         kind=chain_match.kind,
                         pattern=chain_match.pattern,
                         parts=chain_match.parts,
+                        app_version=__version__,
                     )
                 except Exception:
                     logger.exception("連歌の記録に失敗しました。")

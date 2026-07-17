@@ -227,6 +227,26 @@ async def test_on_message_records_detected_senryu(client, records_db_path):
 
 
 @pytest.mark.asyncio
+async def test_on_message_records_app_version(client, records_db_path, monkeypatch):
+    """川柳検出時に、稼働中のバージョンが app_version 列として記録されることを確認する。"""
+    monkeypatch.setattr("src.discord_client.__version__", "9.9.9-integration-test")
+    message = FakeMessage(
+        SENRYU_TEXT,
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=7000),
+        FakeChannel(CHANNEL_ID),
+        message_id=8001,
+    )
+    await client.on_message(message)
+
+    conn = sqlite3.connect(records_db_path)
+    row = conn.execute("SELECT app_version FROM records").fetchone()
+    conn.close()
+
+    assert row == ("9.9.9-integration-test",)
+
+
+@pytest.mark.asyncio
 async def test_on_message_records_even_when_reply_fails(client, records_db_path):
     """Discord への返信が失敗しても検出記録は残ることを確認する。"""
     message = FakeMessage(
