@@ -35,19 +35,26 @@ class DetectionResult:
     morphemes: list[Morpheme]
 
 
-def build_reply(raw_text: str) -> DetectionResult | None:
-    """生テキストから検出パイプラインを実行し、返信テキストと記録用データを構築する。
+@dataclass
+class TokenizedMessage:
+    """1件のメッセージをサニタイズ・形態素解析した結果。"""
 
-    raw_text: Discord から取得した生のテキスト。
-    返り値: 検出結果(DetectionResult)、または検出されなかった場合は None。
-    """
+    text: str
+    morphemes: list[Morpheme]
+
+
+def _tokenize_message(raw_text: str) -> TokenizedMessage:
+    """生テキストをサニタイズし形態素解析する。空文字列になる場合は空リストを返す。"""
     text = sanitize_text(raw_text)
-    if not text:
+    morphemes = tokenize(text) if text else []
+    return TokenizedMessage(text=text, morphemes=morphemes)
+
+
+def _detect_single_message(tokenized: TokenizedMessage) -> DetectionResult | None:
+    """トークナイズ済みの1件のメッセージから単一メッセージ内の5-7-5/5-7-5-7-7検出を行う。"""
+    if not tokenized.morphemes:
         return None
-    morphemes = tokenize(text)
-    if not morphemes:
-        return None
-    candidates = find_candidates(morphemes, text)
+    candidates = find_candidates(tokenized.morphemes, tokenized.text)
     best = pick_best(candidates)
     if best is None:
         return None
@@ -55,8 +62,28 @@ def build_reply(raw_text: str) -> DetectionResult | None:
     return DetectionResult(
         reply_text=reply_text,
         candidate=best,
-        morphemes=morphemes[best.start_idx:best.end_idx],
+        morphemes=tokenized.morphemes[best.start_idx:best.end_idx],
     )
+
+
+def _process_message_text(raw_text: str) -> tuple[DetectionResult | None, TokenizedMessage]:
+    """1回のトークナイズで、単一メッセージ内検出の結果とトークナイズ結果の両方を返す。
+
+    トークナイズ結果は呼び出し側がチェーン検出(ChainTracker)にも再利用し、
+    同じメッセージを二重にトークナイズしないようにする。
+    """
+    tokenized = _tokenize_message(raw_text)
+    detection = _detect_single_message(tokenized)
+    return detection, tokenized
+
+
+def build_reply(raw_text: str) -> DetectionResult | None:
+    """生テキストから単一メッセージ内の検出パイプラインを実行する。
+
+    raw_text: Discord から取得した生のテキスト。
+    返り値: 検出結果(DetectionResult)、または検出されなかった場合は None。
+    """
+    return _detect_single_message(_tokenize_message(raw_text))
 
 
 async def handle_enable(config_store: ConfigStore, channel_id: int) -> str:
