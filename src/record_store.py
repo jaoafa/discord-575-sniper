@@ -80,8 +80,8 @@ class RecordStore:
 
         CREATE TABLE IF NOT EXISTS は既存テーブルに新規列を追加しないため、
         旧スキーマの DB ファイルに対してはこのマイグレーションが必要。
-        マイグレーション前に挿入された既存レコードの app_version は NULL の
-        ままとなる(遡及付与はスコープ外)。
+        マイグレーション前に挿入された既存レコードの app_version は
+        NULL のままとなる(遡及付与はスコープ外)。
         """
         records_columns = {row[1] for row in self._conn.execute("PRAGMA table_info(records)")}
         if "app_version" not in records_columns:

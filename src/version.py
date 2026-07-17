@@ -23,7 +23,7 @@ def _get_git_version() -> str | None:
             check=True,
             timeout=5,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
     version = result.stdout.strip()
     if version.startswith("v"):
@@ -36,8 +36,8 @@ def get_version() -> str:
 
     優先順位:
     1. 環境変数 APPLICATION_VERSION(Docker イメージビルド時に CI から埋め込まれる)
-    2. git describe --tags --always --dirty(ローカル開発環境でのフォールバック)
-    3. "unknown"(どちらも取得できない場合)
+    2. _get_git_version()(ローカル開発環境でのフォールバック)
+    3. _FALLBACK_VERSION(どちらも取得できない場合)
     """
     env_version = os.environ.get("APPLICATION_VERSION")
     if env_version:
