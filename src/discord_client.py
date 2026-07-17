@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
 import discord
@@ -7,6 +8,7 @@ from discord import app_commands
 
 from .config_store import ConfigStore
 from .record_store import RecordStore
+from .senryu.chain import ChainMatch, ChainTracker
 from .senryu.finder import Candidate, find_candidates, pick_best
 from .senryu.preprocess import sanitize_text
 from .senryu.tokenizer import Morpheme, tokenize
@@ -23,6 +25,21 @@ def _build_reply_text(candidate: Candidate) -> str:
     """検出した候補のパート数に応じた見出しで返信テキストを組み立てる。"""
     header = _REPLY_HEADERS[len(candidate.parts)]
     lines = "\n".join(f"> {p}" for p in candidate.parts)
+    return f"{header}\n{lines}"
+
+
+def _build_chain_reply_text(match: ChainMatch) -> str:
+    """複数メッセージ結合により検出した独吟・連歌の返信テキストを組み立てる。
+
+    連歌の場合は、どの投稿者がどのパートを詠んだか分かるよう各行に
+    メンションを付与する。Client 側で AllowedMentions.none() を設定して
+    いるため、これによって実際の通知が発生することはない。
+    """
+    header = f"🎋 {match.kind}を検出しました！"
+    if match.kind == "独吟":
+        lines = "\n".join(f"> {p.text}" for p in match.parts)
+    else:
+        lines = "\n".join(f"> {p.text} (<@{p.user_id}>)" for p in match.parts)
     return f"{header}\n{lines}"
 
 
@@ -105,13 +122,19 @@ async def handle_status(config_store: ConfigStore, channel_id: int, parent_id: i
     return f"このチャンネルの川柳検出は現在「{state}」です。"
 
 
-def create_bot(guild_id: int, config_store: ConfigStore, record_store: RecordStore) -> discord.Client:
+def create_bot(
+    guild_id: int,
+    config_store: ConfigStore,
+    record_store: RecordStore,
+    chain_tracker: ChainTracker,
+) -> discord.Client:
     """discord.py の Client を組み立て、イベントとスラッシュコマンドを配線する。
 
     Args:
         guild_id: コマンドを同期する対象ギルドの ID。
         config_store: チャンネルごとの有効/無効設定を保持する ConfigStore。
         record_store: 検出した川柳を記録する RecordStore。
+        chain_tracker: 複数メッセージ結合による独吟・連歌検出の状態を保持する ChainTracker。
 
     Returns:
         イベントハンドラとスラッシュコマンドが登録済みの discord.Client。
@@ -162,7 +185,9 @@ def create_bot(guild_id: int, config_store: ConfigStore, record_store: RecordSto
         try:
             # 5-7-5・5-7-5-7-7 探索は最悪ケースで形態素数のパート数乗に比例するため、
             # イベントループをブロックしないよう別スレッドで実行する。
-            detection = await asyncio.to_thread(build_reply, message.content)
+            # トークナイズ結果はチェーン検出(ChainTracker)にも再利用し、
+            # 同じメッセージを二重にトークナイズしない。
+            detection, tokenized = await asyncio.to_thread(_process_message_text, message.content)
         except Exception:
             logger.exception("川柳検出処理中に例外が発生したため、このメッセージの処理をスキップします。")
             return
@@ -186,6 +211,36 @@ def create_bot(guild_id: int, config_store: ConfigStore, record_store: RecordSto
                 await message.reply(detection.reply_text)
             except Exception:
                 logger.exception("メッセージへの返信に失敗しました。")
+
+        try:
+            chain_match = chain_tracker.process_message(
+                channel_id=channel.id,
+                user_id=message.author.id,
+                message_id=message.id,
+                text=tokenized.text,
+                morphemes=tokenized.morphemes,
+                now=time.monotonic(),
+            )
+        except Exception:
+            logger.exception("連歌チェーンの処理中に例外が発生しました。")
+            chain_match = None
+        if chain_match is not None:
+            try:
+                # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
+                await asyncio.to_thread(
+                    record_store.add_chain_record,
+                    guild_id=message.guild.id,
+                    channel_id=channel.id,
+                    kind=chain_match.kind,
+                    pattern=chain_match.pattern,
+                    parts=chain_match.parts,
+                )
+            except Exception:
+                logger.exception("連歌の記録に失敗しました。")
+            try:
+                await message.reply(_build_chain_reply_text(chain_match))
+            except Exception:
+                logger.exception("連歌メッセージへの返信に失敗しました。")
 
     senryu_group = app_commands.Group(name="senryu", description="川柳検出 Bot のチャンネル設定")
 
