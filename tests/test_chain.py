@@ -2,9 +2,9 @@ from src.senryu.chain import ChainTracker
 from src.senryu.tokenizer import Morpheme
 
 
-def _morphemes(total_mora: int, pos: str = "名詞") -> list[Morpheme]:
-    """指定した総モーラ数を持つ、単一形態素のリストを作るテスト用ヘルパー。"""
-    return [Morpheme(surface="x", reading="", mora=total_mora, start=0, end=1, pos=pos)]
+def _morphemes(surface: str, total_mora: int, pos: str = "名詞") -> list[Morpheme]:
+    """指定した表層文字列・総モーラ数を持つ、単一形態素のリストを作るテスト用ヘルパー。"""
+    return [Morpheme(surface=surface, reading="", mora=total_mora, start=0, end=len(surface), pos=pos)]
 
 
 def test_returns_none_before_pattern_completes():
@@ -12,7 +12,7 @@ def test_returns_none_before_pattern_completes():
     tracker = ChainTracker()
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=1, text="古池や",
-        morphemes=_morphemes(5), now=0.0,
+        morphemes=_morphemes("古池や", 5), now=0.0,
     )
     assert result is None
 
@@ -22,15 +22,15 @@ def test_detects_senryu_as_dokugin_when_same_author():
     tracker = ChainTracker()
     tracker.process_message(
         channel_id=1, user_id=100, message_id=1, text="古池や",
-        morphemes=_morphemes(5), now=0.0,
+        morphemes=_morphemes("古池や", 5), now=0.0,
     )
     tracker.process_message(
         channel_id=1, user_id=100, message_id=2, text="蛙飛び込む",
-        morphemes=_morphemes(7), now=1.0,
+        morphemes=_morphemes("蛙飛び込む", 7), now=1.0,
     )
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=3, text="水の音",
-        morphemes=_morphemes(5), now=2.0,
+        morphemes=_morphemes("水の音", 5), now=2.0,
     )
     assert result is not None
     assert result.kind == "独吟"
@@ -43,15 +43,15 @@ def test_detects_senryu_as_renga_when_different_authors():
     tracker = ChainTracker()
     tracker.process_message(
         channel_id=1, user_id=1, message_id=1, text="お前かよ",
-        morphemes=_morphemes(5), now=0.0,
+        morphemes=_morphemes("お前かよ", 5), now=0.0,
     )
     tracker.process_message(
         channel_id=1, user_id=2, message_id=2, text="お前誰だよ",
-        morphemes=_morphemes(7), now=1.0,
+        morphemes=_morphemes("お前誰だよ", 7), now=1.0,
     )
     result = tracker.process_message(
         channel_id=1, user_id=1, message_id=3, text="俺アルファ",
-        morphemes=_morphemes(5), now=2.0,
+        morphemes=_morphemes("俺アルファ", 5), now=2.0,
     )
     assert result is not None
     assert result.kind == "連歌"
@@ -65,17 +65,17 @@ def test_five_message_sequence_fires_at_third_message_not_fifth():
     tracker = ChainTracker()
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=0, text="part0",
-        morphemes=_morphemes(5), now=0.0,
+        morphemes=_morphemes("part0", 5), now=0.0,
     )
     assert result is None
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=1, text="part1",
-        morphemes=_morphemes(7), now=1.0,
+        morphemes=_morphemes("part1", 7), now=1.0,
     )
     assert result is None
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=2, text="part2",
-        morphemes=_morphemes(5), now=2.0,
+        morphemes=_morphemes("part2", 5), now=2.0,
     )
     assert result is not None
     assert result.pattern == (5, 7, 5)
@@ -85,12 +85,12 @@ def test_five_message_sequence_fires_at_third_message_not_fifth():
     # 5件目までの検出には至らない(チェーンは検出直後に空になっているため)。
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=3, text="part3",
-        morphemes=_morphemes(7), now=3.0,
+        morphemes=_morphemes("part3", 7), now=3.0,
     )
     assert result is None
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=4, text="part4",
-        morphemes=_morphemes(7), now=4.0,
+        morphemes=_morphemes("part4", 7), now=4.0,
     )
     assert result is None
 
@@ -100,16 +100,16 @@ def test_message_starting_with_attached_word_does_not_extend_chain():
     tracker = ChainTracker()
     tracker.process_message(
         channel_id=1, user_id=100, message_id=1, text="古池や",
-        morphemes=_morphemes(5), now=0.0,
+        morphemes=_morphemes("古池や", 5), now=0.0,
     )
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=2, text="とても",
-        morphemes=_morphemes(7, pos="助詞"), now=1.0,
+        morphemes=_morphemes("とても", 7, pos="助詞"), now=1.0,
     )
     assert result is None
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=3, text="水の音",
-        morphemes=_morphemes(5), now=2.0,
+        morphemes=_morphemes("水の音", 5), now=2.0,
     )
     assert result is None
 
@@ -119,19 +119,19 @@ def test_unqualified_message_resets_chain():
     tracker = ChainTracker()
     tracker.process_message(
         channel_id=1, user_id=100, message_id=1, text="古池や",
-        morphemes=_morphemes(5), now=0.0,
+        morphemes=_morphemes("古池や", 5), now=0.0,
     )
     tracker.process_message(
         channel_id=1, user_id=100, message_id=2, text="こんにちは",
-        morphemes=_morphemes(6), now=1.0,
+        morphemes=_morphemes("こんにちは", 6), now=1.0,
     )
     tracker.process_message(
         channel_id=1, user_id=100, message_id=3, text="蛙飛び込む",
-        morphemes=_morphemes(7), now=2.0,
+        morphemes=_morphemes("蛙飛び込む", 7), now=2.0,
     )
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=4, text="水の音",
-        morphemes=_morphemes(5), now=3.0,
+        morphemes=_morphemes("水の音", 5), now=3.0,
     )
     assert result is None
 
@@ -141,15 +141,15 @@ def test_timeout_over_180_seconds_resets_chain():
     tracker = ChainTracker()
     tracker.process_message(
         channel_id=1, user_id=100, message_id=1, text="古池や",
-        morphemes=_morphemes(5), now=0.0,
+        morphemes=_morphemes("古池や", 5), now=0.0,
     )
     tracker.process_message(
         channel_id=1, user_id=100, message_id=2, text="蛙飛び込む",
-        morphemes=_morphemes(7), now=180.1,
+        morphemes=_morphemes("蛙飛び込む", 7), now=180.1,
     )
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=3, text="水の音",
-        morphemes=_morphemes(5), now=181.0,
+        morphemes=_morphemes("水の音", 5), now=181.0,
     )
     assert result is None
 
@@ -159,15 +159,15 @@ def test_chain_within_180_seconds_still_matches():
     tracker = ChainTracker()
     tracker.process_message(
         channel_id=1, user_id=100, message_id=1, text="古池や",
-        morphemes=_morphemes(5), now=0.0,
+        morphemes=_morphemes("古池や", 5), now=0.0,
     )
     tracker.process_message(
         channel_id=1, user_id=100, message_id=2, text="蛙飛び込む",
-        morphemes=_morphemes(7), now=179.0,
+        morphemes=_morphemes("蛙飛び込む", 7), now=179.0,
     )
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=3, text="水の音",
-        morphemes=_morphemes(5), now=358.0,
+        morphemes=_morphemes("水の音", 5), now=358.0,
     )
     assert result is not None
 
@@ -178,17 +178,17 @@ def test_chain_cleared_completely_after_match():
     for i, mora in enumerate([5, 7, 5]):
         tracker.process_message(
             channel_id=1, user_id=100, message_id=i, text=f"part{i}",
-            morphemes=_morphemes(mora), now=float(i),
+            morphemes=_morphemes(f"part{i}", mora), now=float(i),
         )
     # 検出直後、まだ2件しか積み上がっていないので None
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=10, text="a",
-        morphemes=_morphemes(5), now=10.0,
+        morphemes=_morphemes("a", 5), now=10.0,
     )
     assert result is None
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=11, text="b",
-        morphemes=_morphemes(7), now=11.0,
+        morphemes=_morphemes("b", 7), now=11.0,
     )
     assert result is None
 
@@ -202,22 +202,22 @@ def test_long_chain_of_non_matching_entries_then_matches():
     for i in range(10):
         result = tracker.process_message(
             channel_id=1, user_id=100, message_id=i, text=f"part{i}",
-            morphemes=_morphemes(7), now=float(i),
+            morphemes=_morphemes(f"part{i}", 7), now=float(i),
         )
         assert result is None
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=100, text="古池や",
-        morphemes=_morphemes(5), now=100.0,
+        morphemes=_morphemes("古池や", 5), now=100.0,
     )
     assert result is None
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=101, text="蛙飛び込む",
-        morphemes=_morphemes(7), now=101.0,
+        morphemes=_morphemes("蛙飛び込む", 7), now=101.0,
     )
     assert result is None
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=102, text="水の音",
-        morphemes=_morphemes(5), now=102.0,
+        morphemes=_morphemes("水の音", 5), now=102.0,
     )
     assert result is not None
     assert result.pattern == (5, 7, 5)
@@ -229,19 +229,19 @@ def test_channels_are_isolated():
     tracker = ChainTracker()
     tracker.process_message(
         channel_id=1, user_id=100, message_id=1, text="古池や",
-        morphemes=_morphemes(5), now=0.0,
+        morphemes=_morphemes("古池や", 5), now=0.0,
     )
     tracker.process_message(
         channel_id=2, user_id=100, message_id=2, text="蛙飛び込む",
-        morphemes=_morphemes(7), now=1.0,
+        morphemes=_morphemes("蛙飛び込む", 7), now=1.0,
     )
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=3, text="蛙飛び込む",
-        morphemes=_morphemes(7), now=2.0,
+        morphemes=_morphemes("蛙飛び込む", 7), now=2.0,
     )
     assert result is None
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=4, text="水の音",
-        morphemes=_morphemes(5), now=3.0,
+        morphemes=_morphemes("水の音", 5), now=3.0,
     )
     assert result is not None
