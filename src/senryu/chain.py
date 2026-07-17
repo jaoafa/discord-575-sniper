@@ -1,16 +1,14 @@
 from dataclasses import dataclass
 
-from .finder import SENRYU_PATTERN
+from .finder import SENRYU_PATTERN, can_start_part
 from .mora import total_mora
 from .tokenizer import Morpheme
 
-# 直前の保持メッセージからこの秒数を超えて間隔が空くと、会話が途切れたとみなし
-# チェーンをリセットする。
+# 直前の保持メッセージからこの秒数を超えて間隔が空くと、会話が途切れたとみなしチェーンをリセットする。
 CHAIN_TIMEOUT_SECONDS = 180.0
 
-# チェーンが保持する保持メッセージの最大件数。5-7-5 の一致判定は直近3件のみを
-# 見るため、5-7-5 が成立しないまま5件を超えて積み上がった場合に古いものから
-# 捨てるためのスライディングウィンドウの上限として使う(仕様上の「直前最大5件」)。
+# チェーンが保持する保持メッセージの最大件数。5-7-5 の一致判定は直近3件のみを見るため、
+# 5-7-5 が成立しないまま5件を超えて積み上がった場合に古いものから捨てるためのスライディングウィンドウの上限として使う(仕様上の「直前最大5件」)。
 MAX_CHAIN_LENGTH = 5
 
 
@@ -43,11 +41,7 @@ def _kind_of(parts: list[ChainEntry]) -> str:
 def _find_match(chain: list[ChainEntry]) -> ChainMatch | None:
     """チェーン末尾3件が川柳(5, 7, 5)のパターンと一致するか調べる。
 
-    TANKA_PATTERN(5, 7, 5, 7, 7)の先頭3要素は定義上必ず(5, 7, 5)と一致するため、
-    この判定はメッセージが1件追加されるたびに毎回行われる以上、チェーンが3件に
-    達した時点で常に先に川柳として確定する。したがって複数メッセージ結合による
-    短歌の検出は数学的に到達不可能であり、この関数は川柳のみを対象とする
-    (spec の「短歌をスコープ外とする理由」参照)。
+    TANKA_PATTERN(5, 7, 5, 7, 7)の先頭3要素は定義上必ず(5, 7, 5)と一致するため、この判定はメッセージが1件追加されるたびに毎回行われる以上、チェーンが3件に達した時点で常に先に川柳として確定する。したがって複数メッセージ結合による短歌の検出は数学的に到達不可能であり、この関数は川柳のみを対象とする。
     """
     if len(chain) >= 3 and tuple(e.mora for e in chain[-3:]) == SENRYU_PATTERN:
         parts = chain[-3:]
@@ -63,7 +57,18 @@ class ChainTracker:
     """
 
     def __init__(self) -> None:
+        """チャンネルごとのチェーンを保持する辞書を空の状態で初期化する。"""
         self._chains: dict[int, list[ChainEntry]] = {}
+
+    def _store(self, channel_id: int, chain: list[ChainEntry]) -> None:
+        """チェーンを channel_id に紐づけて保存する。
+
+        空リストをそのまま辞書に残すと、作成・アーカイブが繰り返されるスレッドの ID が使われなくなった後も辞書に残り続けてしまうため、空になった時点でキーごと削除しメモリ上に残さないようにする。
+        """
+        if chain:
+            self._chains[channel_id] = chain
+        else:
+            self._chains.pop(channel_id, None)
 
     def process_message(
         self,
@@ -82,22 +87,20 @@ class ChainTracker:
             user_id: メッセージ投稿者の ID。
             message_id: メッセージの ID。
             text: サニタイズ済みのメッセージ本文。
-            morphemes: text を形態素解析した結果。総モーラ数の算出に使う。
+            morphemes: text を形態素解析した結果。総モーラ数の算出と、先頭形態素が付属語(助詞・助動詞など)でないかの判定(can_start_part())に使う。
             now: 現在時刻を表す単調増加する秒数(例: time.monotonic())。
                 呼び出し側から注入することでテスト時に任意の時刻を扱える。
 
         Returns:
-            5-7-5 が成立した場合は ChainMatch、成立しなかった場合は None
-            (5-7-5-7-7 は数学的に到達不可能なため対象外。spec の
-            「短歌をスコープ外とする理由」参照)。
+            5-7-5 が成立した場合は ChainMatch、成立しなかった場合は None(5-7-5-7-7 は数学的に到達不可能なため対象外)。
         """
         chain = self._chains.get(channel_id, [])
         if chain and (now - chain[-1].timestamp) > CHAIN_TIMEOUT_SECONDS:
             chain = []
 
         mora = total_mora(morphemes)
-        if mora not in (5, 7):
-            self._chains[channel_id] = []
+        if mora not in (5, 7) or not can_start_part(morphemes[0]):
+            self._store(channel_id, [])
             return None
 
         chain = chain + [
@@ -110,5 +113,5 @@ class ChainTracker:
             chain = chain[-MAX_CHAIN_LENGTH:]
 
         match = _find_match(chain)
-        self._chains[channel_id] = [] if match is not None else chain
+        self._store(channel_id, [] if match is not None else chain)
         return match

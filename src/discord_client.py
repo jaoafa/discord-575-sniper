@@ -31,9 +31,7 @@ def _build_reply_text(candidate: Candidate) -> str:
 def _build_chain_reply_text(match: ChainMatch) -> str:
     """複数メッセージ結合により検出した独吟・連歌の返信テキストを組み立てる。
 
-    連歌の場合は、どの投稿者がどのパートを詠んだか分かるよう各行に
-    メンションを付与する。Client 側で AllowedMentions.none() を設定して
-    いるため、これによって実際の通知が発生することはない。
+    連歌の場合は、どの投稿者がどのパートを詠んだか分かるよう各行にメンションを付与する。Client 側で AllowedMentions.none() を設定しているため、これによって実際の通知が発生することはない。
     """
     header = f"🎋 {match.kind}を検出しました！"
     if match.kind == "独吟":
@@ -149,6 +147,10 @@ def create_bot(
     tree = app_commands.CommandTree(client)
     guild_object = discord.Object(id=guild_id)
     synced = False
+    # to_thread() を経由するため、同一チャンネル宛のイベントが並行実行され得る。
+    # チェーン検出はメッセージの到着順に処理される必要があるため、チャンネルごとに
+    # ロックを用意して on_message の本体を直列化する。
+    channel_locks: dict[int, asyncio.Lock] = {}
 
     @client.event
     async def on_ready():
@@ -182,65 +184,65 @@ def create_bot(
             return
         if not enabled:
             return
-        try:
-            # 5-7-5・5-7-5-7-7 探索は最悪ケースで形態素数のパート数乗に比例するため、
-            # イベントループをブロックしないよう別スレッドで実行する。
-            # トークナイズ結果はチェーン検出(ChainTracker)にも再利用し、
-            # 同じメッセージを二重にトークナイズしない。
-            detection, tokenized = await asyncio.to_thread(_process_message_text, message.content)
-        except Exception:
-            logger.exception("川柳検出処理中に例外が発生したため、このメッセージの処理をスキップします。")
-            return
-        if detection is not None:
+        lock = channel_locks.setdefault(channel.id, asyncio.Lock())
+        async with lock:
             try:
-                # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
-                # 記録と返信は互いの成否に依存させない(検出した事実自体を残しつつ、
-                # 記録側の障害でユーザーへの返信まで失われないようにするため)。
-                await asyncio.to_thread(
-                    record_store.add_record,
-                    guild_id=message.guild.id,
+                # 5-7-5・5-7-5-7-7 探索は最悪ケースで形態素数のパート数乗に比例するため、
+                # イベントループをブロックしないよう別スレッドで実行する。
+                detection, tokenized = await asyncio.to_thread(_process_message_text, message.content)
+            except Exception:
+                logger.exception("川柳検出処理中に例外が発生したため、このメッセージの処理をスキップします。")
+                return
+            if detection is not None:
+                try:
+                    # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
+                    # 記録と返信は互いの成否に依存させない(検出した事実自体を残しつつ、
+                    # 記録側の障害でユーザーへの返信まで失われないようにするため)。
+                    await asyncio.to_thread(
+                        record_store.add_record,
+                        guild_id=message.guild.id,
+                        channel_id=channel.id,
+                        user_id=message.author.id,
+                        message_id=message.id,
+                        parts=detection.candidate.parts,
+                        morphemes=detection.morphemes,
+                    )
+                except Exception:
+                    logger.exception("川柳の記録に失敗しました。")
+                try:
+                    await message.reply(detection.reply_text)
+                except Exception:
+                    logger.exception("メッセージへの返信に失敗しました。")
+
+            try:
+                chain_match = chain_tracker.process_message(
                     channel_id=channel.id,
                     user_id=message.author.id,
                     message_id=message.id,
-                    parts=detection.candidate.parts,
-                    morphemes=detection.morphemes,
+                    text=tokenized.text,
+                    morphemes=tokenized.morphemes,
+                    now=time.monotonic(),
                 )
             except Exception:
-                logger.exception("川柳の記録に失敗しました。")
-            try:
-                await message.reply(detection.reply_text)
-            except Exception:
-                logger.exception("メッセージへの返信に失敗しました。")
-
-        try:
-            chain_match = chain_tracker.process_message(
-                channel_id=channel.id,
-                user_id=message.author.id,
-                message_id=message.id,
-                text=tokenized.text,
-                morphemes=tokenized.morphemes,
-                now=time.monotonic(),
-            )
-        except Exception:
-            logger.exception("連歌チェーンの処理中に例外が発生しました。")
-            chain_match = None
-        if chain_match is not None:
-            try:
-                # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
-                await asyncio.to_thread(
-                    record_store.add_chain_record,
-                    guild_id=message.guild.id,
-                    channel_id=channel.id,
-                    kind=chain_match.kind,
-                    pattern=chain_match.pattern,
-                    parts=chain_match.parts,
-                )
-            except Exception:
-                logger.exception("連歌の記録に失敗しました。")
-            try:
-                await message.reply(_build_chain_reply_text(chain_match))
-            except Exception:
-                logger.exception("連歌メッセージへの返信に失敗しました。")
+                logger.exception("連歌チェーンの処理中に例外が発生しました。")
+                chain_match = None
+            if chain_match is not None:
+                try:
+                    # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
+                    await asyncio.to_thread(
+                        record_store.add_chain_record,
+                        guild_id=message.guild.id,
+                        channel_id=channel.id,
+                        kind=chain_match.kind,
+                        pattern=chain_match.pattern,
+                        parts=chain_match.parts,
+                    )
+                except Exception:
+                    logger.exception("連歌の記録に失敗しました。")
+                try:
+                    await message.reply(_build_chain_reply_text(chain_match))
+                except Exception:
+                    logger.exception("連歌メッセージへの返信に失敗しました。")
 
     senryu_group = app_commands.Group(name="senryu", description="川柳検出 Bot のチャンネル設定")
 

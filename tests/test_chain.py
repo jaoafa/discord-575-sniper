@@ -2,9 +2,9 @@ from src.senryu.chain import ChainTracker
 from src.senryu.tokenizer import Morpheme
 
 
-def _morphemes(total_mora: int) -> list[Morpheme]:
+def _morphemes(total_mora: int, pos: str = "名詞") -> list[Morpheme]:
     """指定した総モーラ数を持つ、単一形態素のリストを作るテスト用ヘルパー。"""
-    return [Morpheme(surface="x", reading="", mora=total_mora, start=0, end=1, pos="名詞")]
+    return [Morpheme(surface="x", reading="", mora=total_mora, start=0, end=1, pos=pos)]
 
 
 def test_returns_none_before_pattern_completes():
@@ -58,13 +58,9 @@ def test_detects_senryu_as_renga_when_different_authors():
 
 
 def test_five_message_sequence_fires_at_third_message_not_fifth():
-    """5-7-5-7-7という並びであっても、先頭3件が5-7-5に一致した時点で即座に
-    川柳として検出・チェーンのリセットが起こることを確認する。
+    """5-7-5-7-7という並びであっても、先頭3件が5-7-5に一致した時点で即座に川柳として検出・チェーンのリセットが起こることを確認する。
 
-    SENRYU_PATTERN(5, 7, 5)はTANKA_PATTERN(5, 7, 5, 7, 7)の先頭3要素と定義上
-    常に一致するため、複数メッセージ結合による短歌の検出は数学的に到達不可能
-    (spec の「短歌をスコープ外とする理由」参照)。このテストはその挙動を
-    明示的に固定する。
+    SENRYU_PATTERN(5, 7, 5)はTANKA_PATTERN(5, 7, 5, 7, 7)の先頭3要素と定義上常に一致するため、複数メッセージ結合による短歌の検出は数学的に到達不可能。このテストはその挙動を明示的に固定する。
     """
     tracker = ChainTracker()
     result = tracker.process_message(
@@ -95,6 +91,25 @@ def test_five_message_sequence_fires_at_third_message_not_fifth():
     result = tracker.process_message(
         channel_id=1, user_id=100, message_id=4, text="part4",
         morphemes=_morphemes(7), now=4.0,
+    )
+    assert result is None
+
+
+def test_message_starting_with_attached_word_does_not_extend_chain():
+    """先頭形態素が助詞などの付属語であるメッセージは、モーラ数が5・7でもチェーンを延長しないことを確認する。"""
+    tracker = ChainTracker()
+    tracker.process_message(
+        channel_id=1, user_id=100, message_id=1, text="古池や",
+        morphemes=_morphemes(5), now=0.0,
+    )
+    result = tracker.process_message(
+        channel_id=1, user_id=100, message_id=2, text="とても",
+        morphemes=_morphemes(7, pos="助詞"), now=1.0,
+    )
+    assert result is None
+    result = tracker.process_message(
+        channel_id=1, user_id=100, message_id=3, text="水の音",
+        morphemes=_morphemes(5), now=2.0,
     )
     assert result is None
 

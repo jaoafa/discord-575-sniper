@@ -14,8 +14,12 @@ TANKA_PATTERN: tuple[int, ...] = (5, 7, 5, 7, 7)
 DEFAULT_PATTERNS: tuple[tuple[int, ...], ...] = (SENRYU_PATTERN, TANKA_PATTERN)
 
 
-def _can_start_part(m: Morpheme) -> bool:
-    """形態素が各パートの先頭になり得るかどうかを判定する。"""
+def can_start_part(m: Morpheme) -> bool:
+    """形態素が各パートの先頭になり得るかどうかを判定する。
+
+    単一メッセージ内探索(本モジュール)と複数メッセージ結合探索(chain.py)の
+    両方から使う共通の判定なので、モジュール非公開名にしていない。
+    """
     return m.pos not in _NON_STARTING_POS
 
 
@@ -69,7 +73,7 @@ def _find_from(
             )
         ]
 
-    if not _can_start_part(morphemes[start]):
+    if not can_start_part(morphemes[start]):
         return []
 
     n = len(morphemes)

@@ -43,7 +43,6 @@ def count_mora(reading: str) -> int:
 def total_mora(morphemes: "Sequence[Morpheme]") -> int:
     """形態素列全体の総モーラ数を求める。
 
-    各形態素の mora フィールド(tokenize() が count_mora() で算出済み)を
-    合算するだけで、読み文字列を再解析しない。
+    各形態素の mora フィールド(tokenize() が count_mora() で算出済み)を合算するだけで、読み文字列を再解析しない。
     """
     return sum(m.mora for m in morphemes)
