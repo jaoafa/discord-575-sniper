@@ -171,7 +171,8 @@ def test_find_candidates_excludes_window_containing_unknown_mora_word():
 
 
 def test_find_candidates_allows_window_containing_zero_mora_symbol():
-    """補助記号・空白による mora=0 は既存どおり除外対象にならないことを確認する。
+    """補助記号・空白による mora=0 は既存どおり除外対象にならず、
+    かつその文字自体は検出結果テキストから除去されることを確認する。
 
     空白は can_start_part() によりパート先頭になれないため、
     直前のパートに取り込まれた形で候補が成立する。
@@ -185,4 +186,21 @@ def test_find_candidates_allows_window_containing_zero_mora_symbol():
     text = "あいうえおかきくけこさし　たちつてと"
     candidates = find_candidates(morphemes, text)
     assert len(candidates) == 1
-    assert candidates[0].parts == ("あいうえお", "かきくけこさし　", "たちつてと")
+    assert candidates[0].parts == ("あいうえお", "かきくけこさし", "たちつてと")
+    assert candidates[0].text == "あいうえおかきくけこさしたちつてと"
+
+
+def test_find_candidates_strips_zero_mora_symbol_from_middle_of_part():
+    """パート内部に挟まった補助記号(句読点など)が検出結果テキストから除去されることを確認する。"""
+    morphemes = [
+        _m("あい", 2, 0, 2, pos="名詞"),
+        _m("、", 0, 2, 3, pos="補助記号"),
+        _m("うえお", 3, 3, 6, pos="名詞"),
+        _m("かきくけこさし", 7, 6, 13, pos="名詞"),
+        _m("たちつてと", 5, 13, 18, pos="名詞"),
+    ]
+    text = "あい、うえおかきくけこさしたちつてと"
+    candidates = find_candidates(morphemes, text)
+    assert len(candidates) == 1
+    assert candidates[0].parts == ("あいうえお", "かきくけこさし", "たちつてと")
+    assert candidates[0].text == "あいうえおかきくけこさしたちつてと"

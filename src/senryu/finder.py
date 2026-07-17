@@ -30,12 +30,25 @@ def can_start_part(m: Morpheme) -> bool:
     return m.pos not in _NON_STARTING_POS
 
 
-def _has_unknown_mora_word(morphemes: list[Morpheme]) -> bool:
-    """読みが取得できず mora=0 になった、記号・空白以外の形態素が含まれるかを判定する。"""
+def has_unknown_mora_word(morphemes: list[Morpheme]) -> bool:
+    """読みが取得できず mora=0 になった、記号・空白以外の形態素が含まれるかを判定する。
+
+    単一メッセージ内探索(本モジュール)と複数メッセージ結合探索(chain.py)の
+    両方から使う共通の判定なので、モジュール非公開名にしていない。
+    """
     return any(
         m.mora == 0 and m.pos not in _ZERO_MORA_IGNORE_POS
         for m in morphemes
     )
+
+
+def _join_surface(morphemes: list[Morpheme], start: int, end: int) -> str:
+    """指定範囲の形態素から、mora=0(記号・空白)の形態素を除いた表層文字列を連結する。
+
+    has_unknown_mora_word() のチェックを通過済みの区間であることが前提であり、
+    その場合に残る mora=0 形態素は記号・空白品詞のみであることが保証されている。
+    """
+    return "".join(m.surface for m in morphemes[start:end] if m.mora > 0)
 
 
 @dataclass
@@ -73,13 +86,13 @@ def _find_from(
     """
     if not remaining_pattern:
         idxs = part_starts + [start]
-        if _has_unknown_mora_word(morphemes[idxs[0]:idxs[-1]]):
+        if has_unknown_mora_word(morphemes[idxs[0]:idxs[-1]]):
             return []
         parts = tuple(
-            text[morphemes[idxs[i]].start:morphemes[idxs[i + 1] - 1].end]
+            _join_surface(morphemes, idxs[i], idxs[i + 1])
             for i in range(len(idxs) - 1)
         )
-        full_text = text[morphemes[idxs[0]].start:morphemes[idxs[-1] - 1].end]
+        full_text = "".join(parts)
         return [
             Candidate(
                 start_idx=idxs[0],
