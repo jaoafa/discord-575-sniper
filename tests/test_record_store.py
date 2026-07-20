@@ -515,3 +515,88 @@ def test_count_records_by_user_filters_by_keyword(tmp_path):
     count = store.count_records_by_user(channel_id=111, user_id=42, keyword="蛙")
 
     assert count == 1
+
+
+def test_list_records_by_user_returns_empty_list_when_no_records(tmp_path):
+    """該当レコードが1件も無い場合、空リストを返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+
+    records = store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)
+
+    assert records == []
+
+
+def test_list_records_by_user_orders_newest_first(tmp_path):
+    """detected_at の新しい順(INSERT の後の行ほど先)に返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    for i in range(3):
+        store.add_record(
+            guild_id=1, channel_id=111, user_id=42, message_id=100 + i,
+            parts=(f"part{i}a", f"part{i}b", f"part{i}c"), morphemes=[],
+            app_version="1.0.0",
+        )
+
+    records = store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)
+
+    assert [r.part1 for r in records] == ["part2a", "part1a", "part0a"]
+
+
+def test_list_records_by_user_respects_limit_and_offset(tmp_path):
+    """limit/offset によるページングが正しく効くことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    for i in range(5):
+        store.add_record(
+            guild_id=1, channel_id=111, user_id=42, message_id=100 + i,
+            parts=(f"part{i}a", f"part{i}b", f"part{i}c"), morphemes=[],
+            app_version="1.0.0",
+        )
+
+    page1 = store.list_records_by_user(channel_id=111, user_id=42, limit=2, offset=0)
+    page2 = store.list_records_by_user(channel_id=111, user_id=42, limit=2, offset=2)
+
+    assert [r.part1 for r in page1] == ["part4a", "part3a"]
+    assert [r.part1 for r in page2] == ["part2a", "part1a"]
+
+
+def test_list_records_by_user_filters_by_keyword(tmp_path):
+    """keyword 指定時、部分一致するレコードのみ返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("古池や", "蛙飛び込む", "水の音"), morphemes=[], app_version="1.0.0",
+    )
+    store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=2,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+
+    records = store.list_records_by_user(channel_id=111, user_id=42, keyword="蛙", limit=25, offset=0)
+
+    assert len(records) == 1
+    assert records[0].part2 == "蛙飛び込む"
+
+
+def test_list_records_by_user_returns_record_summary_fields(tmp_path):
+    """返される RecordSummary の各フィールドが正しく設定されていることを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う", "え", "お"), morphemes=[], app_version="1.0.0",
+    )
+
+    records = store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)
+
+    assert len(records) == 1
+    record = records[0]
+    assert isinstance(record.id, int)
+    assert record.part1 == "あ"
+    assert record.part2 == "い"
+    assert record.part3 == "う"
+    assert record.part4 == "え"
+    assert record.part5 == "お"
+    assert record.detected_at != ""

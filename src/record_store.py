@@ -289,3 +289,37 @@ class RecordStore:
         with self._lock:
             row = self._conn.execute(query, params).fetchone()
         return row[0]
+
+    def list_records_by_user(
+        self, *, channel_id: int, user_id: int, keyword: str | None = None,
+        limit: int, offset: int,
+    ) -> list[RecordSummary]:
+        """指定チャンネル・投稿者の records を新しい順に limit/offset でページ取得する。
+
+        Args:
+            channel_id: 対象チャンネルの ID。
+            user_id: 対象投稿者の ID。
+            keyword: 指定した場合、part1〜part5 のいずれかに部分一致するレコードのみを対象にする。
+            limit: 取得する最大件数。
+            offset: 何件目からを取得するか(0始まり)。
+
+        Returns:
+            detected_at の新しい順に並んだ RecordSummary のリスト。
+        """
+        keyword_clause, keyword_params = _build_keyword_clause(keyword)
+        query = "".join((
+            "SELECT id, part1, part2, part3, part4, part5, detected_at FROM records "
+            "WHERE channel_id = ? AND user_id = ?",
+            keyword_clause,
+            " ORDER BY detected_at DESC LIMIT ? OFFSET ?",
+        ))
+        params: list[object] = [channel_id, user_id, *keyword_params, limit, offset]
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        return [
+            RecordSummary(
+                id=row[0], part1=row[1], part2=row[2], part3=row[3],
+                part4=row[4], part5=row[5], detected_at=row[6],
+            )
+            for row in rows
+        ]
