@@ -1,17 +1,47 @@
 import json
 import sqlite3
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .senryu.chain import ChainEntry
 from .senryu.tokenizer import Morpheme
 
 
+@dataclass
+class RecordSummary:
+    """/senryu delete の一覧・プレビュー表示に必要な records の要約情報。"""
+
+    id: int
+    part1: str
+    part2: str
+    part3: str
+    part4: str | None
+    part5: str | None
+    detected_at: str
+
+
+_KEYWORD_COLUMNS = ("part1", "part2", "part3", "part4", "part5")
+
+
+def _build_keyword_clause(keyword: str | None) -> tuple[str, list[object]]:
+    """keyword による絞り込み条件(部分一致)の SQL 断片とプレースホルダ用パラメータを組み立てる。
+
+    keyword が None の場合は絞り込みなし(空文字列・空リスト)を返す。
+    """
+    if keyword is None:
+        return "", []
+    clause = " AND (" + " OR ".join(f"{c} LIKE ?" for c in _KEYWORD_COLUMNS) + ")"
+    pattern = f"%{keyword}%"
+    return clause, [pattern] * len(_KEYWORD_COLUMNS)
+
+
 class RecordStore:
     """検出した川柳を SQLite に永続化するクラス。
 
     件数・期間の制限は設けず、全件を永続的に保存する
-    (削除・ローテーションは今回のスコープ外)。
+    (レコードのローテーションは今回のスコープ外だが、投稿者自身による
+    個別削除は `delete_record` でサポートする)。
     """
 
     def __init__(self, db_path: str):
@@ -237,3 +267,25 @@ class RecordStore:
         if row is None:
             return None
         return (row[0], row[1])
+
+    def count_records_by_user(
+        self, *, channel_id: int, user_id: int, keyword: str | None = None
+    ) -> int:
+        """指定チャンネル・投稿者の records 件数を数える(delete コマンドのページネーション用)。
+
+        Args:
+            channel_id: 対象チャンネルの ID。
+            user_id: 対象投稿者の ID。
+            keyword: 指定した場合、part1〜part5 のいずれかに部分一致するレコードのみを数える。
+
+        Returns:
+            条件に一致する records の件数。
+        """
+        keyword_clause, keyword_params = _build_keyword_clause(keyword)
+        query = (
+            "SELECT COUNT(*) FROM records WHERE channel_id = ? AND user_id = ?" + keyword_clause
+        )
+        params: list[object] = [channel_id, user_id, *keyword_params]
+        with self._lock:
+            row = self._conn.execute(query, params).fetchone()
+        return row[0]

@@ -465,3 +465,53 @@ def test_add_record_leaves_pre_migration_rows_app_version_null(tmp_path):
     row = conn.execute("SELECT app_version FROM records WHERE message_id = 4").fetchone()
     conn.close()
     assert row == (None,)
+
+
+def test_count_records_by_user_returns_zero_when_no_records(tmp_path):
+    """該当レコードが1件も無い場合、0件と数えることを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+
+    count = store.count_records_by_user(channel_id=111, user_id=42)
+
+    assert count == 0
+
+
+def test_count_records_by_user_filters_by_channel_and_user(tmp_path):
+    """channel_id と user_id の両方が一致するレコードのみを数えることを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    store.add_record(
+        guild_id=1, channel_id=111, user_id=999, message_id=2,
+        parts=("か", "き", "く"), morphemes=[], app_version="1.0.0",
+    )
+    store.add_record(
+        guild_id=1, channel_id=222, user_id=42, message_id=3,
+        parts=("さ", "し", "す"), morphemes=[], app_version="1.0.0",
+    )
+
+    count = store.count_records_by_user(channel_id=111, user_id=42)
+
+    assert count == 1
+
+
+def test_count_records_by_user_filters_by_keyword(tmp_path):
+    """keyword を指定した場合、いずれかの part に部分一致するレコードのみを数えることを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("古池や", "蛙飛び込む", "水の音"), morphemes=[], app_version="1.0.0",
+    )
+    store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=2,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+
+    count = store.count_records_by_user(channel_id=111, user_id=42, keyword="蛙")
+
+    assert count == 1
