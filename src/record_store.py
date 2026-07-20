@@ -323,3 +323,22 @@ class RecordStore:
             )
             for row in rows
         ]
+
+    def delete_record(self, *, record_id: int, user_id: int) -> bool:
+        """record_id かつ user_id が一致する records を1件削除する。
+
+        Args:
+            record_id: 削除対象の records.id。
+            user_id: 削除を要求している投稿者の ID。record_id の行の user_id と
+                一致しない場合は削除しない(他人の記録を削除できないようにするため)。
+
+        Returns:
+            削除できた(1行 DELETE できた)場合 True。該当行が無かった
+            (存在しない、既に削除済み、user_id が一致しない)場合 False。
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM records WHERE id = ? AND user_id = ?", (record_id, user_id),
+            )
+            self._conn.commit()
+        return cursor.rowcount > 0

@@ -600,3 +600,45 @@ def test_list_records_by_user_returns_record_summary_fields(tmp_path):
     assert record.part4 == "え"
     assert record.part5 == "お"
     assert record.detected_at != ""
+
+
+def test_delete_record_removes_matching_row_and_returns_true(tmp_path):
+    """record_id と user_id が一致する場合、該当行を削除し True を返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    record = store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)[0]
+
+    deleted = store.delete_record(record_id=record.id, user_id=42)
+
+    assert deleted is True
+    assert store.count_records_by_user(channel_id=111, user_id=42) == 0
+
+
+def test_delete_record_returns_false_when_user_id_mismatches(tmp_path):
+    """user_id が一致しない場合、行を削除せず False を返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    record = store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)[0]
+
+    deleted = store.delete_record(record_id=record.id, user_id=999)
+
+    assert deleted is False
+    assert store.count_records_by_user(channel_id=111, user_id=42) == 1
+
+
+def test_delete_record_returns_false_when_record_id_not_found(tmp_path):
+    """存在しない record_id を指定した場合、False を返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+
+    deleted = store.delete_record(record_id=99999, user_id=42)
+
+    assert deleted is False
