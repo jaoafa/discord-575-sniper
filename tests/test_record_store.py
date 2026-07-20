@@ -465,3 +465,40 @@ def test_add_record_leaves_pre_migration_rows_app_version_null(tmp_path):
     row = conn.execute("SELECT app_version FROM records WHERE message_id = 4").fetchone()
     conn.close()
     assert row == (None,)
+
+
+def test_add_record_returns_inserted_row_id(tmp_path):
+    """add_record が挿入した行の id を返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    first_id = store.add_record(
+        guild_id=1, channel_id=2, user_id=3, message_id=4,
+        parts=("a", "b", "c"), morphemes=[], app_version="1.0.0",
+    )
+    second_id = store.add_record(
+        guild_id=1, channel_id=2, user_id=3, message_id=5,
+        parts=("a", "b", "c"), morphemes=[], app_version="1.0.0",
+    )
+    assert isinstance(first_id, int)
+    assert second_id == first_id + 1
+
+
+def test_add_chain_record_returns_inserted_row_id(tmp_path):
+    """add_chain_record が挿入した行の id を返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    parts = [
+        ChainEntry(text="古池や", user_id=1, message_id=10, mora=5, timestamp=0.0),
+        ChainEntry(text="蛙飛び込む", user_id=1, message_id=11, mora=7, timestamp=1.0),
+        ChainEntry(text="水の音", user_id=1, message_id=12, mora=5, timestamp=2.0),
+    ]
+    first_id = store.add_chain_record(
+        guild_id=1, channel_id=2, kind="独吟", pattern=(5, 7, 5), parts=parts,
+        app_version="1.0.0",
+    )
+    second_id = store.add_chain_record(
+        guild_id=1, channel_id=2, kind="独吟", pattern=(5, 7, 5), parts=parts,
+        app_version="1.0.0",
+    )
+    assert isinstance(first_id, int)
+    assert second_id == first_id + 1

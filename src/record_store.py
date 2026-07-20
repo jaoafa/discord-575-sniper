@@ -102,7 +102,7 @@ class RecordStore:
         parts: tuple[str, ...],
         morphemes: list[Morpheme],
         app_version: str,
-    ) -> None:
+    ) -> int:
         """検出した川柳・短歌を1件記録する。
 
         Args:
@@ -115,6 +115,10 @@ class RecordStore:
             morphemes: 採用された部分に対応する形態素のリスト(フィルタ前)。
                 mora=0 の形態素も含むため、surface を単純結合しても parts とは一致しない。
             app_version: 検出時に稼働していた discord-575-sniper のバージョン。
+
+        Returns:
+            挿入した行の id(records.id)。PraiseTracker が「直前の詠み」を
+            識別するための source_id として使う。
         """
         detected_at = datetime.now(timezone.utc).isoformat()
         morphemes_json = json.dumps(
@@ -132,7 +136,7 @@ class RecordStore:
         part4 = parts[3] if len(parts) >= 4 else None
         part5 = parts[4] if len(parts) >= 5 else None
         with self._lock:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 """
                 INSERT INTO records (
                     detected_at, guild_id, channel_id, user_id, message_id,
@@ -155,6 +159,7 @@ class RecordStore:
                 ),
             )
             self._conn.commit()
+            return cursor.lastrowid
 
     def add_chain_record(
         self,
@@ -165,7 +170,7 @@ class RecordStore:
         pattern: tuple[int, ...],
         parts: list[ChainEntry],
         app_version: str,
-    ) -> None:
+    ) -> int:
         """複数メッセージ結合により検出した川柳(独吟・連歌)を1件記録する。
 
         Args:
@@ -176,6 +181,10 @@ class RecordStore:
                 将来の拡張に備え固定値ではなく引数として受け取る)。
             parts: 一致した各パート(ChainEntry のリスト、3件)。
             app_version: 検出時に稼働していた discord-575-sniper のバージョン。
+
+        Returns:
+            挿入した行の id(chain_records.id)。PraiseTracker が「直前の詠み」を
+            識別するための source_id として使う。
         """
         detected_at = datetime.now(timezone.utc).isoformat()
         pattern_str = "-".join(str(n) for n in pattern)
@@ -192,7 +201,7 @@ class RecordStore:
             ensure_ascii=False,
         )
         with self._lock:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 """
                 INSERT INTO chain_records (
                     detected_at, guild_id, channel_id, kind, pattern, parts_json, app_version
@@ -201,6 +210,7 @@ class RecordStore:
                 (detected_at, guild_id, channel_id, kind, pattern_str, parts_json, app_version),
             )
             self._conn.commit()
+            return cursor.lastrowid
 
     _PICKABLE_COLUMNS = frozenset({"part1", "part2", "part3", "part4", "part5"})
 
