@@ -638,6 +638,50 @@ def create_bot(
             return
         await interaction.response.send_message(message)
 
+    @senryu_group.command(name="delete", description="このチャンネルで自分が投稿した記録を選んで削除します")
+    @app_commands.describe(keyword="記録を絞り込むキーワード(部分一致・任意)")
+    async def delete(interaction: discord.Interaction, keyword: str | None = None):
+        """`/senryu delete` コマンドを処理し、記録の削除 UI を表示する。"""
+        if interaction.channel_id is None:
+            await interaction.response.send_message(
+                "このコマンドはチャンネル内でのみ使用できます。", ephemeral=True
+            )
+            return
+        try:
+            records, total_count = await handle_delete_list(
+                record_store,
+                channel_id=interaction.channel_id,
+                user_id=interaction.user.id,
+                keyword=keyword,
+                offset=0,
+            )
+        except Exception:
+            logger.exception("削除対象記録の取得に失敗しました。")
+            await interaction.response.send_message(
+                "記録の取得に失敗しました。時間を置いて再度お試しください。", ephemeral=True
+            )
+            return
+        if not records:
+            await interaction.response.send_message(
+                "削除できる記録が見つかりませんでした。", ephemeral=True
+            )
+            return
+        view = DeleteRecordView(
+            record_store=record_store,
+            channel_id=interaction.channel_id,
+            user_id=interaction.user.id,
+            keyword=keyword,
+            offset=0,
+            records=records,
+            total_count=total_count,
+        )
+        await interaction.response.send_message(
+            content=_format_delete_list_content(total_count),
+            view=view,
+            ephemeral=True,
+        )
+        view.message = await interaction.original_response()
+
     @tree.error
     async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
         """スラッシュコマンド実行時のエラーをログに残し、ユーザーへ簡潔に通知する。"""
@@ -654,4 +698,6 @@ def create_bot(
 
     tree.add_command(senryu_group, guild=guild_object)
 
+    # テストからコマンドツリーの登録状態を検証できるよう、Client に保持しておく。
+    client.tree = tree
     return client
