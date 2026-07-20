@@ -3,6 +3,8 @@ import pytest
 from src.config_store import ConfigStore
 from src.discord_client import (
     build_reply,
+    handle_delete_execute,
+    handle_delete_list,
     handle_disable,
     handle_enable,
     handle_remix,
@@ -132,3 +134,66 @@ async def test_handle_remix_reports_shortage_when_no_tanka_records(record_store)
     message = await handle_remix(record_store, channel_id=111)
 
     assert "足り" in message
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_list_returns_empty_when_no_records(record_store):
+    """該当レコードが1件も無い場合、空リストと件数0を返すことを確認する。"""
+    records, total_count = await handle_delete_list(
+        record_store, channel_id=111, user_id=42, keyword=None, offset=0,
+    )
+
+    assert records == []
+    assert total_count == 0
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_list_returns_own_records_newest_first(record_store):
+    """実行者自身のレコードを新しい順に返すことを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=2,
+        parts=("か", "き", "く"), morphemes=[], app_version="1.0.0",
+    )
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=999, message_id=3,
+        parts=("さ", "し", "す"), morphemes=[], app_version="1.0.0",
+    )
+
+    records, total_count = await handle_delete_list(
+        record_store, channel_id=111, user_id=42, keyword=None, offset=0,
+    )
+
+    assert total_count == 2
+    assert [r.part1 for r in records] == ["か", "あ"]
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_execute_deletes_own_record(record_store):
+    """実行者自身のレコードを削除し True を返すことを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    record = record_store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)[0]
+
+    deleted = await handle_delete_execute(record_store, record_id=record.id, user_id=42)
+
+    assert deleted is True
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_execute_rejects_other_users_record(record_store):
+    """他人のレコードは削除できず False を返すことを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    record = record_store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)[0]
+
+    deleted = await handle_delete_execute(record_store, record_id=record.id, user_id=999)
+
+    assert deleted is False

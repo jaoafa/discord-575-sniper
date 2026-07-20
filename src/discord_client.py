@@ -7,7 +7,7 @@ import discord
 from discord import app_commands
 
 from .config_store import ConfigStore
-from .record_store import RecordStore
+from .record_store import RecordStore, RecordSummary
 from .senryu.chain import ChainMatch, ChainTracker
 from .senryu.finder import Candidate, find_candidates, pick_best
 from .senryu.preprocess import sanitize_text
@@ -121,6 +121,8 @@ async def handle_status(config_store: ConfigStore, channel_id: int, parent_id: i
     return f"このチャンネルの川柳検出は現在「{state}」です。"
 
 
+_PAGE_SIZE = 25
+
 _REMIX_PARTS: tuple[tuple[str, bool], ...] = (
     ("part1", False),
     ("part2", False),
@@ -147,6 +149,57 @@ async def handle_remix(record_store: RecordStore, channel_id: int) -> str:
         picks.append(pick)
     lines = "\n".join(f"> {text} (<@{user_id}>)" for text, user_id in picks)
     return f"🎋 過去の記録から短歌を合成しました！\n{lines}"
+
+
+async def handle_delete_list(
+    record_store: RecordStore,
+    *,
+    channel_id: int,
+    user_id: int,
+    keyword: str | None,
+    offset: int,
+) -> tuple[list[RecordSummary], int]:
+    """指定チャンネルで実行者自身が投稿した削除対象候補を1ページ分取得する。
+
+    Args:
+        record_store: 記録の永続化を担う RecordStore。
+        channel_id: 対象チャンネルの ID。
+        user_id: コマンド実行者の ID。
+        keyword: 指定した場合、いずれかの句に部分一致するレコードのみに絞り込む。
+        offset: 何件目からを取得するか(0始まり)。
+
+    Returns:
+        (records, total_count) のタプル。records は最大 _PAGE_SIZE 件、
+        total_count は絞り込み後の総件数(ページネーション用)。
+    """
+    total_count = await asyncio.to_thread(
+        record_store.count_records_by_user,
+        channel_id=channel_id, user_id=user_id, keyword=keyword,
+    )
+    records = await asyncio.to_thread(
+        record_store.list_records_by_user,
+        channel_id=channel_id, user_id=user_id, keyword=keyword,
+        limit=_PAGE_SIZE, offset=offset,
+    )
+    return records, total_count
+
+
+async def handle_delete_execute(
+    record_store: RecordStore, *, record_id: int, user_id: int,
+) -> bool:
+    """指定 record_id の記録を、user_id が一致する場合のみ削除する。
+
+    Args:
+        record_store: 記録の永続化を担う RecordStore。
+        record_id: 削除対象の records.id。
+        user_id: 削除を要求している実行者の ID。
+
+    Returns:
+        削除できた場合 True、対象が存在しない・他人の記録だった場合 False。
+    """
+    return await asyncio.to_thread(
+        record_store.delete_record, record_id=record_id, user_id=user_id,
+    )
 
 
 def create_bot(
