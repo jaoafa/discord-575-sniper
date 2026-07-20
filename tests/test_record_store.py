@@ -465,3 +465,86 @@ def test_add_record_leaves_pre_migration_rows_app_version_null(tmp_path):
     row = conn.execute("SELECT app_version FROM records WHERE message_id = 4").fetchone()
     conn.close()
     assert row == (None,)
+
+
+def test_add_record_returns_inserted_row_id(tmp_path):
+    """add_record が挿入した行の id を返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    first_id = store.add_record(
+        guild_id=1, channel_id=2, user_id=3, message_id=4,
+        parts=("a", "b", "c"), morphemes=[], app_version="1.0.0",
+    )
+    second_id = store.add_record(
+        guild_id=1, channel_id=2, user_id=3, message_id=5,
+        parts=("a", "b", "c"), morphemes=[], app_version="1.0.0",
+    )
+    assert isinstance(first_id, int)
+    assert second_id == first_id + 1
+
+
+def test_add_chain_record_returns_inserted_row_id(tmp_path):
+    """add_chain_record が挿入した行の id を返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    parts = [
+        ChainEntry(text="古池や", user_id=1, message_id=10, mora=5, timestamp=0.0),
+        ChainEntry(text="蛙飛び込む", user_id=1, message_id=11, mora=7, timestamp=1.0),
+        ChainEntry(text="水の音", user_id=1, message_id=12, mora=5, timestamp=2.0),
+    ]
+    first_id = store.add_chain_record(
+        guild_id=1, channel_id=2, kind="独吟", pattern=(5, 7, 5), parts=parts,
+        app_version="1.0.0",
+    )
+    second_id = store.add_chain_record(
+        guild_id=1, channel_id=2, kind="独吟", pattern=(5, 7, 5), parts=parts,
+        app_version="1.0.0",
+    )
+    assert isinstance(first_id, int)
+    assert second_id == first_id + 1
+
+
+def test_register_praise_returns_one_for_first_praise(tmp_path):
+    """初めてのあっぱれで、カウントが1になって返ることを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    count = store.register_praise(source="record", source_id=1, user_id=100)
+    assert count == 1
+
+
+def test_register_praise_accumulates_count_across_users(tmp_path):
+    """複数ユーザーからのあっぱれでカウントが加算されることを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.register_praise(source="record", source_id=1, user_id=100)
+    count = store.register_praise(source="record", source_id=1, user_id=200)
+    assert count == 2
+
+
+def test_register_praise_ignores_duplicate_user(tmp_path):
+    """同じユーザーが同じ詠みに2回あっぱれを送っても、2回目は None を返し
+    カウントが加算されないことを確認する。
+    """
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.register_praise(source="record", source_id=1, user_id=100)
+    second = store.register_praise(source="record", source_id=1, user_id=100)
+    assert second is None
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT count FROM praises WHERE source = 'record' AND source_id = 1"
+    ).fetchone()
+    conn.close()
+    assert row == (1,)
+
+
+def test_register_praise_is_independent_per_source(tmp_path):
+    """source/source_id が異なる詠み同士は、あっぱれカウントが独立していることを
+    確認する(record と chain_record の id 空間が別々でも混同しない)。
+    """
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.register_praise(source="record", source_id=1, user_id=100)
+    count = store.register_praise(source="chain_record", source_id=1, user_id=100)
+    assert count == 1

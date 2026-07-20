@@ -6,6 +6,7 @@ from .config_store import ConfigStore
 from .discord_client import create_bot
 from .record_store import RecordStore
 from .senryu.chain import ChainTracker
+from .senryu.praise import PraiseTracker
 
 
 def main() -> None:
@@ -17,7 +18,8 @@ def main() -> None:
     config_store = ConfigStore("data/config.db")
     record_store = RecordStore("data/records.db")
     chain_tracker = ChainTracker()
-    client = create_bot(guild_id, config_store, record_store, chain_tracker)
+    praise_tracker = PraiseTracker()
+    client = create_bot(guild_id, config_store, record_store, chain_tracker, praise_tracker)
     client.run(token)
 
 
