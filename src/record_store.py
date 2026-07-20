@@ -61,6 +61,26 @@ class RecordStore:
         )
         self._migrate_add_tanka_columns()
         self._migrate_add_app_version_column()
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS praises (
+                source TEXT NOT NULL,
+                source_id INTEGER NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (source, source_id)
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS praise_users (
+                source TEXT NOT NULL,
+                source_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                PRIMARY KEY (source, source_id, user_id)
+            )
+            """
+        )
         self._conn.commit()
 
     def _migrate_add_tanka_columns(self) -> None:
@@ -211,6 +231,44 @@ class RecordStore:
             )
             self._conn.commit()
             return cursor.lastrowid
+
+    def register_praise(self, *, source: str, source_id: int, user_id: int) -> int | None:
+        """指定した詠みへの「あっぱれ」を1件記録する。
+
+        Args:
+            source: 詠みの由来。"record"(単一メッセージ検出)または
+                "chain_record"(独吟・連歌検出)。
+            source_id: source に対応するテーブル(records/chain_records)の id。
+            user_id: あっぱれを送ったユーザーの ID。
+
+        Returns:
+            加算後のあっぱれカウント数。指定したユーザーがその詠みに対して
+            既にあっぱれ済みの場合は、カウントを加算せず None を返す。
+        """
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT 1 FROM praise_users WHERE source = ? AND source_id = ? AND user_id = ?",
+                (source, source_id, user_id),
+            ).fetchone()
+            if existing is not None:
+                return None
+            self._conn.execute(
+                "INSERT INTO praise_users (source, source_id, user_id) VALUES (?, ?, ?)",
+                (source, source_id, user_id),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO praises (source, source_id, count) VALUES (?, ?, 1)
+                ON CONFLICT(source, source_id) DO UPDATE SET count = count + 1
+                """,
+                (source, source_id),
+            )
+            row = self._conn.execute(
+                "SELECT count FROM praises WHERE source = ? AND source_id = ?",
+                (source, source_id),
+            ).fetchone()
+            self._conn.commit()
+            return row[0]
 
     _PICKABLE_COLUMNS = frozenset({"part1", "part2", "part3", "part4", "part5"})
 
