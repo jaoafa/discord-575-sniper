@@ -3,6 +3,7 @@ import pytest
 
 from src.config_store import ConfigStore
 from src.discord_client import (
+    DeleteConfirmView,
     DeleteRecordView,
     _DeleteBaseView,
     _format_record_option_label,
@@ -426,3 +427,94 @@ async def test_delete_record_view_next_button_advances_page(record_store):
     new_view = interaction.response.edit_message_calls[0]["view"]
     assert isinstance(new_view, DeleteRecordView)
     assert new_view._offset == 25
+
+
+@pytest.mark.asyncio
+async def test_delete_record_view_select_shows_confirm_preview(record_store):
+    """Select Menu で1件選択すると、DeleteConfirmView への差し替えが行われることを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    records, total_count = await handle_delete_list(
+        record_store, channel_id=111, user_id=42, keyword=None, offset=0,
+    )
+    view = DeleteRecordView(
+        record_store=record_store, channel_id=111, user_id=42, keyword=None,
+        offset=0, records=records, total_count=total_count,
+    )
+    interaction = FakeInteraction(user_id=42)
+    view._select._values = [str(records[0].id)]
+
+    await view._on_select(interaction)
+
+    assert len(interaction.response.edit_message_calls) == 1
+    call = interaction.response.edit_message_calls[0]
+    assert isinstance(call["view"], DeleteConfirmView)
+    assert "あ" in call["content"]
+
+
+@pytest.mark.asyncio
+async def test_delete_confirm_view_confirm_deletes_and_reports_success(record_store):
+    """「削除する」押下時、記録を削除し成功メッセージへ差し替えることを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    record = record_store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)[0]
+    view = DeleteConfirmView(
+        record_store=record_store, record=record, user_id=42, channel_id=111,
+        keyword=None, offset=0,
+    )
+    interaction = FakeInteraction(user_id=42)
+
+    await view._on_confirm(interaction)
+
+    assert len(interaction.response.edit_message_calls) == 1
+    call = interaction.response.edit_message_calls[0]
+    assert call["content"] == "削除しました。"
+    assert call["view"] is None
+    assert record_store.count_records_by_user(channel_id=111, user_id=42) == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_confirm_view_confirm_reports_failure_when_already_deleted(record_store):
+    """既に削除済みの記録に対して「削除する」を押した場合、失敗メッセージへ差し替えることを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    record = record_store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)[0]
+    record_store.delete_record(record_id=record.id, user_id=42)
+    view = DeleteConfirmView(
+        record_store=record_store, record=record, user_id=42, channel_id=111,
+        keyword=None, offset=0,
+    )
+    interaction = FakeInteraction(user_id=42)
+
+    await view._on_confirm(interaction)
+
+    call = interaction.response.edit_message_calls[0]
+    assert "既に削除されているか" in call["content"]
+
+
+@pytest.mark.asyncio
+async def test_delete_confirm_view_cancel_returns_to_list(record_store):
+    """「キャンセル」押下時、一覧画面(DeleteRecordView)に戻すことを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    record = record_store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)[0]
+    view = DeleteConfirmView(
+        record_store=record_store, record=record, user_id=42, channel_id=111,
+        keyword=None, offset=0,
+    )
+    interaction = FakeInteraction(user_id=42)
+
+    await view._on_cancel(interaction)
+
+    assert len(interaction.response.edit_message_calls) == 1
+    call = interaction.response.edit_message_calls[0]
+    assert isinstance(call["view"], DeleteRecordView)
+    assert record_store.count_records_by_user(channel_id=111, user_id=42) == 1

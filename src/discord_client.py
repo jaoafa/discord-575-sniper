@@ -371,6 +371,70 @@ class DeleteRecordView(_DeleteBaseView):
         new_view.message = interaction.message
 
 
+class DeleteConfirmView(_DeleteBaseView):
+    """/senryu delete の削除確認画面(削除する/キャンセル)を担当する View。"""
+
+    def __init__(
+        self,
+        *,
+        record_store: RecordStore,
+        record: RecordSummary,
+        user_id: int,
+        channel_id: int,
+        keyword: str | None,
+        offset: int,
+    ) -> None:
+        """確認対象の1件(record)と、キャンセル時に戻る一覧の状態を受け取り初期化する。"""
+        super().__init__(user_id=user_id)
+        self._record_store = record_store
+        self._record = record
+        self._channel_id = channel_id
+        self._keyword = keyword
+        self._offset = offset
+
+        confirm_button = discord.ui.Button(label="削除する", style=discord.ButtonStyle.danger)
+        confirm_button.callback = self._on_confirm
+        self.add_item(confirm_button)
+
+        cancel_button = discord.ui.Button(label="キャンセル", style=discord.ButtonStyle.secondary)
+        cancel_button.callback = self._on_cancel
+        self.add_item(cancel_button)
+
+    async def _on_confirm(self, interaction: discord.Interaction) -> None:
+        """「削除する」押下時、対象記録を削除し結果をメッセージに反映する。"""
+        deleted = await handle_delete_execute(
+            self._record_store, record_id=self._record.id, user_id=self._user_id,
+        )
+        if deleted:
+            content = "削除しました。"
+        else:
+            content = "この記録は既に削除されているか、削除する権限がありません。"
+        await interaction.response.edit_message(content=content, view=None)
+
+    async def _on_cancel(self, interaction: discord.Interaction) -> None:
+        """「キャンセル」押下時、一覧表示(現在ページ)に戻す。"""
+        records, total_count = await handle_delete_list(
+            self._record_store,
+            channel_id=self._channel_id,
+            user_id=self._user_id,
+            keyword=self._keyword,
+            offset=self._offset,
+        )
+        list_view = DeleteRecordView(
+            record_store=self._record_store,
+            channel_id=self._channel_id,
+            user_id=self._user_id,
+            keyword=self._keyword,
+            offset=self._offset,
+            records=records,
+            total_count=total_count,
+        )
+        await interaction.response.edit_message(
+            content=_format_delete_list_content(total_count), view=list_view,
+        )
+        list_view.message = interaction.message
+
+
 def create_bot(
     guild_id: int,
     config_store: ConfigStore,
