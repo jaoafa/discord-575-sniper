@@ -122,6 +122,8 @@ async def handle_status(config_store: ConfigStore, channel_id: int, parent_id: i
 
 
 _PAGE_SIZE = 25
+_DELETE_VIEW_TIMEOUT = 180.0
+_OPTION_LABEL_MAX_LENGTH = 100
 
 _REMIX_PARTS: tuple[tuple[str, bool], ...] = (
     ("part1", False),
@@ -200,6 +202,69 @@ async def handle_delete_execute(
     return await asyncio.to_thread(
         record_store.delete_record, record_id=record_id, user_id=user_id,
     )
+
+
+def _format_record_option_label(record: RecordSummary) -> str:
+    """RecordSummary から Select Menu の選択肢ラベル用の短いプレビュー文字列を組み立てる。
+
+    Discord の SelectOption.label は100文字までのため、超える場合は末尾を切り詰め
+    省略記号(…)を付与する。
+    """
+    parts = [p for p in (record.part1, record.part2, record.part3, record.part4, record.part5) if p]
+    label = " / ".join(parts)
+    if len(label) > _OPTION_LABEL_MAX_LENGTH:
+        label = label[: _OPTION_LABEL_MAX_LENGTH - 1] + "…"
+    return label
+
+
+def _format_record_preview(record: RecordSummary) -> str:
+    """RecordSummary から削除確認画面に表示する全文プレビューを組み立てる。"""
+    parts = [p for p in (record.part1, record.part2, record.part3, record.part4, record.part5) if p]
+    lines = "\n".join(f"> {p}" for p in parts)
+    return f"以下の記録を削除しますか？\n{lines}"
+
+
+def _format_delete_list_content(total_count: int) -> str:
+    """一覧画面のメッセージ本文(件数表示)を組み立てる。"""
+    return f"削除する記録を選んでください。(全 {total_count} 件)"
+
+
+class _DeleteBaseView(discord.ui.View):
+    """/senryu delete の各画面(一覧・確認)が共有する土台。
+
+    実行者以外の操作拒否と、タイムアウト時にコンポーネントを無効化してメッセージへ
+    反映する共通処理をまとめる。一覧・確認の2画面はこれを継承する。
+    """
+
+    def __init__(self, *, user_id: int) -> None:
+        """実行者の user_id を受け取り、View を初期化する。
+
+        Args:
+            user_id: このコマンドを実行したユーザーの ID。interaction_check で
+                他ユーザーからの操作を拒否するために使う。
+        """
+        super().__init__(timeout=_DELETE_VIEW_TIMEOUT)
+        self._user_id = user_id
+        self.message: discord.Message | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """コマンド実行者以外の操作を拒否する。"""
+        if interaction.user.id != self._user_id:
+            await interaction.response.send_message(
+                content="この操作はコマンド実行者のみ行えます。", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        """タイムアウト時に全コンポーネントを無効化し、その旨をメッセージに反映する。"""
+        for item in self.children:
+            item.disabled = True
+        if self.message is not None:
+            await self.message.edit(
+                content="操作がタイムアウトしました。再度 `/senryu delete` を実行してください。",
+                view=self,
+            )
 
 
 def create_bot(

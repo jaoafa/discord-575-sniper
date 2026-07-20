@@ -1,7 +1,11 @@
+import discord
 import pytest
 
 from src.config_store import ConfigStore
 from src.discord_client import (
+    _DeleteBaseView,
+    _format_record_option_label,
+    _format_record_preview,
     build_reply,
     handle_delete_execute,
     handle_delete_list,
@@ -10,7 +14,7 @@ from src.discord_client import (
     handle_remix,
     handle_status,
 )
-from src.record_store import RecordStore
+from src.record_store import RecordStore, RecordSummary
 
 
 def test_build_reply_detects_575_famous_example():
@@ -197,3 +201,127 @@ async def test_handle_delete_execute_rejects_other_users_record(record_store):
     deleted = await handle_delete_execute(record_store, record_id=record.id, user_id=999)
 
     assert deleted is False
+
+
+class FakeUser:
+    """discord.abc.User の代わりに使うスタブ。"""
+
+    def __init__(self, user_id: int):
+        self.id = user_id
+
+
+class FakeResponse:
+    """discord.InteractionResponse の代わりに使うスタブ。呼び出し内容を記録する。"""
+
+    def __init__(self):
+        self.edit_message_calls = []
+        self.send_message_calls = []
+
+    async def edit_message(self, **kwargs):
+        """edit_message 呼び出しの引数を記録する。"""
+        self.edit_message_calls.append(kwargs)
+
+    async def send_message(self, **kwargs):
+        """send_message 呼び出しの引数を記録する。"""
+        self.send_message_calls.append(kwargs)
+
+
+class FakeInteractionMessage:
+    """discord.Message の代わりに使うスタブ。edit 呼び出しを記録する。"""
+
+    def __init__(self):
+        self.edit_calls = []
+
+    async def edit(self, **kwargs):
+        """edit 呼び出しの引数を記録する。"""
+        self.edit_calls.append(kwargs)
+
+
+class FakeInteraction:
+    """discord.Interaction の代わりに使うスタブ。"""
+
+    def __init__(self, user_id: int):
+        self.user = FakeUser(user_id)
+        self.response = FakeResponse()
+        self.message = FakeInteractionMessage()
+
+
+def test_format_record_option_label_joins_parts_with_slash():
+    """複数パートを " / " 区切りで連結したラベルを組み立てることを確認する。"""
+    record = RecordSummary(
+        id=1, part1="あ", part2="い", part3="う", part4=None, part5=None,
+        detected_at="2026-01-01T00:00:00+00:00",
+    )
+
+    label = _format_record_option_label(record)
+
+    assert label == "あ / い / う"
+
+
+def test_format_record_option_label_truncates_when_too_long():
+    """100文字を超える場合、末尾を切り詰め省略記号を付与することを確認する。"""
+    record = RecordSummary(
+        id=1, part1="あ" * 60, part2="い" * 60, part3="う", part4=None, part5=None,
+        detected_at="2026-01-01T00:00:00+00:00",
+    )
+
+    label = _format_record_option_label(record)
+
+    assert len(label) == 100
+    assert label.endswith("…")
+
+
+def test_format_record_preview_includes_all_parts():
+    """5パート(短歌)すべてがプレビュー本文に含まれることを確認する。"""
+    record = RecordSummary(
+        id=1, part1="あ", part2="い", part3="う", part4="え", part5="お",
+        detected_at="2026-01-01T00:00:00+00:00",
+    )
+
+    preview = _format_record_preview(record)
+
+    assert "あ" in preview
+    assert "い" in preview
+    assert "う" in preview
+    assert "え" in preview
+    assert "お" in preview
+
+
+@pytest.mark.asyncio
+async def test_delete_base_view_interaction_check_rejects_other_user():
+    """コマンド実行者以外の操作を拒否することを確認する。"""
+    view = _DeleteBaseView(user_id=42)
+    interaction = FakeInteraction(user_id=999)
+
+    allowed = await view.interaction_check(interaction)
+
+    assert allowed is False
+    assert len(interaction.response.send_message_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_base_view_interaction_check_allows_same_user():
+    """コマンド実行者本人の操作を許可することを確認する。"""
+    view = _DeleteBaseView(user_id=42)
+    interaction = FakeInteraction(user_id=42)
+
+    allowed = await view.interaction_check(interaction)
+
+    assert allowed is True
+    assert len(interaction.response.send_message_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_base_view_on_timeout_disables_items_and_edits_message():
+    """タイムアウト時に全コンポーネントを無効化し、メッセージを更新することを確認する。"""
+    view = _DeleteBaseView(user_id=42)
+    button = discord.ui.Button(label="テスト", disabled=False)
+    view.add_item(button)
+    message = FakeInteractionMessage()
+    view.message = message
+
+    await view.on_timeout()
+
+    assert button.disabled is True
+    assert len(message.edit_calls) == 1
+    assert "タイムアウト" in message.edit_calls[0]["content"]
