@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 
@@ -10,6 +11,7 @@ from .config_store import ConfigStore
 from .record_store import RecordStore, RecordSummary
 from .senryu.chain import ChainMatch, ChainTracker
 from .senryu.finder import Candidate, find_candidates, pick_best
+from .senryu.praise import LastSenryu, PraiseTracker
 from .senryu.preprocess import sanitize_text
 from .senryu.tokenizer import Morpheme, tokenize
 from .version import __version__
@@ -20,6 +22,10 @@ _REPLY_HEADERS: dict[int, str] = {
     3: "🎋 川柳を検出しました！",
     5: "🎋 短歌を検出しました！",
 }
+
+# あっぱれ判定に使う正規表現。メッセージ本文(右トリム後)が「あっぱれ」で
+# 終わっていればマッチする(前方に任意の文字列があってもよい)。
+_APPARE_PATTERN = re.compile(r"あっぱれ$")
 
 
 def _build_reply_text(candidate: Candidate) -> str:
@@ -456,11 +462,65 @@ class DeleteConfirmView(_DeleteBaseView):
         list_view.message = interaction.message
 
 
+def _is_self_bot_message(message: discord.Message, client: discord.Client) -> bool:
+    """メッセージの投稿者が自 Bot(575 sniper)自身かどうかを判定する。
+
+    client.user はログイン完了前は None のため、その場合は自 Bot ではないと
+    判定する(ログイン前に on_message が呼ばれることは実運用上ない)。
+    """
+    return client.user is not None and message.author.id == client.user.id
+
+
+async def _handle_appare(
+    message: discord.Message,
+    channel,
+    record_store: RecordStore,
+    praise_tracker: PraiseTracker,
+) -> None:
+    """メッセージがあっぱれ判定条件に合致すれば、カウント加算と返信を行う。
+
+    対象外条件(直前の詠みが無い/期限切れ、送信者が投稿者本人、送信者が
+    あっぱれ済み)に該当する場合は何もしない。
+    """
+    if not _APPARE_PATTERN.search(message.content.rstrip()):
+        return
+    target: LastSenryu | None = praise_tracker.get_target(
+        channel_id=channel.id, now=time.monotonic()
+    )
+    if target is None:
+        return
+    if message.author.id in target.author_user_ids:
+        return
+    try:
+        # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
+        count = await asyncio.to_thread(
+            record_store.register_praise,
+            source=target.source,
+            source_id=target.source_id,
+            user_id=message.author.id,
+        )
+    except Exception:
+        logger.exception("あっぱれの記録に失敗しました。")
+        return
+    if count is None:
+        return
+    try:
+        await channel.send(
+            f"あっぱれ頂きました！({count})",
+            reference=discord.MessageReference(
+                message_id=target.reply_message_id, channel_id=channel.id
+            ),
+        )
+    except Exception:
+        logger.exception("あっぱれへの返信に失敗しました。")
+
+
 def create_bot(
     guild_id: int,
     config_store: ConfigStore,
     record_store: RecordStore,
     chain_tracker: ChainTracker,
+    praise_tracker: PraiseTracker,
 ) -> discord.Client:
     """discord.py の Client を組み立て、イベントとスラッシュコマンドを配線する。
 
@@ -469,6 +529,7 @@ def create_bot(
         config_store: チャンネルごとの有効/無効設定を保持する ConfigStore。
         record_store: 検出した川柳を記録する RecordStore。
         chain_tracker: 複数メッセージ結合による独吟・連歌検出の状態を保持する ChainTracker。
+        praise_tracker: チャンネルごとの「直前の詠み」を保持する PraiseTracker。
 
     Returns:
         イベントハンドラとスラッシュコマンドが登録済みの discord.Client。
@@ -503,12 +564,10 @@ def create_bot(
 
     @client.event
     async def on_message(message: discord.Message):
-        """メッセージ受信時に、対象ギルド・有効チャンネルであれば川柳検出を行い返信する。"""
+        """メッセージ受信時に、対象ギルド・有効チャンネルであれば川柳検出・あっぱれ判定を行う。"""
         if message.guild is None:
             return
         if message.guild.id != guild_id:
-            return
-        if message.author.bot:
             return
         channel = message.channel
         parent_id = getattr(channel, "parent_id", None)
@@ -522,6 +581,19 @@ def create_bot(
             return
         lock = channel_locks.setdefault(channel.id, asyncio.Lock())
         async with lock:
+            # あっぱれ判定は、他 Bot からのメッセージは除外しつつ自 Bot 自身の
+            # メッセージは対象に含める。既存の検出パイプライン用の
+            # 「Bot 全般を除外」判定(この後の if message.author.bot: return)より
+            # 前段の、独立した経路として実行する。
+            if not message.author.bot or _is_self_bot_message(message, client):
+                try:
+                    await _handle_appare(message, channel, record_store, praise_tracker)
+                except Exception:
+                    logger.exception("あっぱれ判定処理中に例外が発生しました。")
+
+            if message.author.bot:
+                return
+
             try:
                 # 5-7-5・5-7-5-7-7 探索は最悪ケースで形態素数のパート数乗に比例するため、
                 # イベントループをブロックしないよう別スレッドで実行する。
@@ -530,11 +602,12 @@ def create_bot(
                 logger.exception("川柳検出処理中に例外が発生したため、このメッセージの処理をスキップします。")
                 return
             if detection is not None:
+                record_id: int | None = None
                 try:
                     # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
                     # 記録と返信は互いの成否に依存させない(検出した事実自体を残しつつ、
                     # 記録側の障害でユーザーへの返信まで失われないようにするため)。
-                    await asyncio.to_thread(
+                    record_id = await asyncio.to_thread(
                         record_store.add_record,
                         guild_id=message.guild.id,
                         channel_id=channel.id,
@@ -546,6 +619,15 @@ def create_bot(
                     )
                 except Exception:
                     logger.exception("川柳の記録に失敗しました。")
+                if record_id is not None:
+                    praise_tracker.record_detection(
+                        channel_id=channel.id,
+                        source="record",
+                        source_id=record_id,
+                        reply_message_id=message.id,
+                        author_user_ids=frozenset({message.author.id}),
+                        now=time.monotonic(),
+                    )
                 try:
                     await message.reply(detection.reply_text)
                 except Exception:
@@ -564,9 +646,10 @@ def create_bot(
                 logger.exception("連歌チェーンの処理中に例外が発生しました。")
                 chain_match = None
             if chain_match is not None:
+                chain_id: int | None = None
                 try:
                     # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
-                    await asyncio.to_thread(
+                    chain_id = await asyncio.to_thread(
                         record_store.add_chain_record,
                         guild_id=message.guild.id,
                         channel_id=channel.id,
@@ -577,6 +660,15 @@ def create_bot(
                     )
                 except Exception:
                     logger.exception("連歌の記録に失敗しました。")
+                if chain_id is not None:
+                    praise_tracker.record_detection(
+                        channel_id=channel.id,
+                        source="chain_record",
+                        source_id=chain_id,
+                        reply_message_id=chain_match.parts[-1].message_id,
+                        author_user_ids=frozenset(p.user_id for p in chain_match.parts),
+                        now=time.monotonic(),
+                    )
                 try:
                     await message.reply(_build_chain_reply_text(chain_match))
                 except Exception:

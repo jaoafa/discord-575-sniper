@@ -24,6 +24,7 @@ from src.config_store import ConfigStore
 from src.discord_client import create_bot
 from src.record_store import RecordStore
 from src.senryu.chain import ChainTracker
+from src.senryu.praise import PraiseTracker
 
 GUILD_ID = 1000
 CHANNEL_ID = 2000
@@ -54,6 +55,11 @@ class FakeChannel:
         self.id = channel_id
         if parent_id is not None:
             self.parent_id = parent_id
+        self.send_calls: list[tuple[str, discord.MessageReference | None]] = []
+
+    async def send(self, content, *, reference=None):
+        """channel.send() 呼び出しを記録するスタブ実装。"""
+        self.send_calls.append((content, reference))
 
 
 class FakeMessage:
@@ -102,10 +108,16 @@ def chain_tracker():
 
 
 @pytest.fixture
-def client(config_store, record_store, chain_tracker):
+def praise_tracker():
+    """テスト用の PraiseTracker(チャンネル間で状態を共有しない新規インスタンス)。"""
+    return PraiseTracker()
+
+
+@pytest.fixture
+def client(config_store, record_store, chain_tracker, praise_tracker):
     """有効化済みチャンネルを持つ、実際に配線された discord.Client を生成する。"""
     config_store.set_enabled(CHANNEL_ID, True)
-    return create_bot(GUILD_ID, config_store, record_store, chain_tracker)
+    return create_bot(GUILD_ID, config_store, record_store, chain_tracker, praise_tracker)
 
 
 @pytest.mark.asyncio
@@ -131,7 +143,7 @@ async def test_on_ready_syncs_command_tree_only_once(monkeypatch, config_store, 
         return []
 
     monkeypatch.setattr(app_commands.CommandTree, "sync", fake_sync)
-    client = create_bot(GUILD_ID, config_store, record_store, ChainTracker())
+    client = create_bot(GUILD_ID, config_store, record_store, ChainTracker(), PraiseTracker())
 
     await client.on_ready()
     await client.on_ready()
@@ -468,3 +480,243 @@ async def test_senryu_delete_command_reports_error_when_list_fails(client, recor
     args, kwargs = interaction.response.send_message_calls[0]
     assert "取得に失敗" in args[0]
     assert kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_on_message_replies_appare_after_senryu_detected(client):
+    """川柳検出直後に「あっぱれ」を送ると、あっぱれ頂きました(1)と返信されることを確認する。"""
+    detect_message = FakeMessage(
+        SENRYU_TEXT,
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=7000),
+        FakeChannel(CHANNEL_ID),
+        message_id=9100,
+    )
+    await client.on_message(detect_message)
+
+    appare_message = FakeMessage(
+        "あっぱれ",
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=8000),
+        detect_message.channel,
+        message_id=9101,
+    )
+    await client.on_message(appare_message)
+
+    assert len(detect_message.channel.send_calls) == 1
+    content, reference = detect_message.channel.send_calls[0]
+    assert content == "あっぱれ頂きました！(1)"
+    assert reference.message_id == 9100
+    assert reference.channel_id == CHANNEL_ID
+
+
+@pytest.mark.asyncio
+async def test_on_message_replies_appare_with_leading_text(client):
+    """「あっぱれ」の前に任意の文字列があっても末尾一致すれば反応することを確認する。"""
+    detect_message = FakeMessage(
+        SENRYU_TEXT,
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=7000),
+        FakeChannel(CHANNEL_ID),
+        message_id=9150,
+    )
+    await client.on_message(detect_message)
+
+    appare_message = FakeMessage(
+        "本当にあっぱれ",
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=8000),
+        detect_message.channel,
+        message_id=9151,
+    )
+    await client.on_message(appare_message)
+
+    assert len(detect_message.channel.send_calls) == 1
+    content, reference = detect_message.channel.send_calls[0]
+    assert content == "あっぱれ頂きました！(1)"
+    assert reference.message_id == 9150
+    assert reference.channel_id == CHANNEL_ID
+
+
+@pytest.mark.asyncio
+async def test_on_message_ignores_appare_without_prior_senryu(client):
+    """直前に検出された詠みが無いチャンネルでは、あっぱれメッセージに反応しないことを確認する。"""
+    appare_message = FakeMessage(
+        "あっぱれ",
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=8000),
+        FakeChannel(CHANNEL_ID),
+        message_id=9200,
+    )
+    await client.on_message(appare_message)
+    assert appare_message.channel.send_calls == []
+
+
+@pytest.mark.asyncio
+async def test_on_message_ignores_appare_after_praise_window_expires(client, monkeypatch):
+    """直前の詠みの検出から300秒を超えて経過すると、あっぱれメッセージに反応しないことを確認する。"""
+    clock = {"value": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["value"])
+
+    detect_message = FakeMessage(
+        SENRYU_TEXT,
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=7000),
+        FakeChannel(CHANNEL_ID),
+        message_id=9300,
+    )
+    await client.on_message(detect_message)
+
+    clock["value"] = 300.01
+    appare_message = FakeMessage(
+        "あっぱれ",
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=8000),
+        detect_message.channel,
+        message_id=9301,
+    )
+    await client.on_message(appare_message)
+
+    assert detect_message.channel.send_calls == []
+
+
+@pytest.mark.asyncio
+async def test_on_message_ignores_duplicate_appare_from_same_user(client):
+    """同じユーザーが同じ詠みに2回あっぱれを送っても、2回目は反応しないことを確認する。"""
+    detect_message = FakeMessage(
+        SENRYU_TEXT,
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=7000),
+        FakeChannel(CHANNEL_ID),
+        message_id=9400,
+    )
+    await client.on_message(detect_message)
+
+    praiser = FakeAuthor(bot=False, author_id=8000)
+    first_appare = FakeMessage(
+        "あっぱれ", FakeGuild(GUILD_ID), praiser, detect_message.channel, message_id=9401,
+    )
+    await client.on_message(first_appare)
+    second_appare = FakeMessage(
+        "あっぱれ", FakeGuild(GUILD_ID), praiser, detect_message.channel, message_id=9402,
+    )
+    await client.on_message(second_appare)
+
+    assert len(detect_message.channel.send_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_on_message_ignores_self_appare_from_original_author(client):
+    """詠みの投稿者本人が自分の詠みにあっぱれを送っても反応しないことを確認する。"""
+    author = FakeAuthor(bot=False, author_id=7000)
+    detect_message = FakeMessage(
+        SENRYU_TEXT, FakeGuild(GUILD_ID), author, FakeChannel(CHANNEL_ID), message_id=9500,
+    )
+    await client.on_message(detect_message)
+
+    self_appare = FakeMessage(
+        "あっぱれ", FakeGuild(GUILD_ID), author, detect_message.channel, message_id=9501,
+    )
+    await client.on_message(self_appare)
+
+    assert detect_message.channel.send_calls == []
+
+
+@pytest.mark.asyncio
+async def test_on_message_ignores_appare_from_any_renga_contributor(client):
+    """連歌の場合、寄与したいずれのユーザーが自分であっぱれを送っても反応しないことを確認する。"""
+    authors = [
+        FakeAuthor(bot=False, author_id=1),
+        FakeAuthor(bot=False, author_id=2),
+        FakeAuthor(bot=False, author_id=1),
+    ]
+    texts = ["古池や", "蛙飛び込む", "水の音"]
+    last_message = None
+    for i, (text, author) in enumerate(zip(texts, authors)):
+        last_message = FakeMessage(
+            text, FakeGuild(GUILD_ID), author, FakeChannel(CHANNEL_ID), message_id=9600 + i,
+        )
+        await client.on_message(last_message)
+
+    appare_from_contributor = FakeMessage(
+        "あっぱれ", FakeGuild(GUILD_ID), FakeAuthor(bot=False, author_id=2),
+        last_message.channel, message_id=9610,
+    )
+    await client.on_message(appare_from_contributor)
+
+    assert last_message.channel.send_calls == []
+
+
+@pytest.mark.asyncio
+async def test_on_message_ignores_appare_from_other_bot(client):
+    """自 Bot 以外の Bot から送られたあっぱれメッセージには反応しないことを確認する。"""
+    detect_message = FakeMessage(
+        SENRYU_TEXT,
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=7000),
+        FakeChannel(CHANNEL_ID),
+        message_id=9700,
+    )
+    await client.on_message(detect_message)
+
+    appare_from_bot = FakeMessage(
+        "あっぱれ", FakeGuild(GUILD_ID), FakeAuthor(bot=True, author_id=8000),
+        detect_message.channel, message_id=9701,
+    )
+    await client.on_message(appare_from_bot)
+
+    assert detect_message.channel.send_calls == []
+
+
+@pytest.mark.asyncio
+async def test_on_message_allows_appare_from_self_bot(client):
+    """自 Bot(575 sniper)自身が送信したメッセージも、あっぱれ判定の対象になることを確認する
+    (他 Bot からのメッセージは除外されるが、自 Bot は対象外条件から除外されないため)。
+    """
+    self_bot_id = 6000
+    client._connection.user = FakeAuthor(bot=True, author_id=self_bot_id)
+
+    detect_message = FakeMessage(
+        SENRYU_TEXT,
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=7000),
+        FakeChannel(CHANNEL_ID),
+        message_id=9800,
+    )
+    await client.on_message(detect_message)
+
+    self_bot_appare = FakeMessage(
+        "あっぱれ",
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=True, author_id=self_bot_id),
+        detect_message.channel,
+        message_id=9801,
+    )
+    await client.on_message(self_bot_appare)
+
+    assert len(detect_message.channel.send_calls) == 1
+    content, reference = detect_message.channel.send_calls[0]
+    assert content == "あっぱれ頂きました！(1)"
+    assert reference.message_id == 9800
+    assert reference.channel_id == CHANNEL_ID
+
+
+@pytest.mark.asyncio
+async def test_on_message_ignores_message_not_ending_with_appare(client):
+    """「あっぱれ」で終わらないメッセージには反応しないことを確認する。"""
+    detect_message = FakeMessage(
+        SENRYU_TEXT,
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=7000),
+        FakeChannel(CHANNEL_ID),
+        message_id=9900,
+    )
+    await client.on_message(detect_message)
+
+    non_matching = FakeMessage(
+        "あっぱれです", FakeGuild(GUILD_ID), FakeAuthor(bot=False, author_id=8000),
+        detect_message.channel, message_id=9901,
+    )
+    await client.on_message(non_matching)
+
+    assert detect_message.channel.send_calls == []

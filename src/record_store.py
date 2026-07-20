@@ -100,6 +100,26 @@ class RecordStore:
         )
         self._migrate_add_tanka_columns()
         self._migrate_add_app_version_column()
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS praises (
+                source TEXT NOT NULL,
+                source_id INTEGER NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (source, source_id)
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS praise_users (
+                source TEXT NOT NULL,
+                source_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                PRIMARY KEY (source, source_id, user_id)
+            )
+            """
+        )
         self._conn.commit()
 
     def _migrate_add_tanka_columns(self) -> None:
@@ -141,7 +161,7 @@ class RecordStore:
         parts: tuple[str, ...],
         morphemes: list[Morpheme],
         app_version: str,
-    ) -> None:
+    ) -> int:
         """検出した川柳・短歌を1件記録する。
 
         Args:
@@ -154,6 +174,10 @@ class RecordStore:
             morphemes: 採用された部分に対応する形態素のリスト(フィルタ前)。
                 mora=0 の形態素も含むため、surface を単純結合しても parts とは一致しない。
             app_version: 検出時に稼働していた discord-575-sniper のバージョン。
+
+        Returns:
+            挿入した行の id(records.id)。PraiseTracker が「直前の詠み」を
+            識別するための source_id として使う。
         """
         detected_at = datetime.now(timezone.utc).isoformat()
         morphemes_json = json.dumps(
@@ -171,7 +195,7 @@ class RecordStore:
         part4 = parts[3] if len(parts) >= 4 else None
         part5 = parts[4] if len(parts) >= 5 else None
         with self._lock:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 """
                 INSERT INTO records (
                     detected_at, guild_id, channel_id, user_id, message_id,
@@ -194,6 +218,7 @@ class RecordStore:
                 ),
             )
             self._conn.commit()
+            return cursor.lastrowid
 
     def add_chain_record(
         self,
@@ -204,7 +229,7 @@ class RecordStore:
         pattern: tuple[int, ...],
         parts: list[ChainEntry],
         app_version: str,
-    ) -> None:
+    ) -> int:
         """複数メッセージ結合により検出した川柳(独吟・連歌)を1件記録する。
 
         Args:
@@ -215,6 +240,10 @@ class RecordStore:
                 将来の拡張に備え固定値ではなく引数として受け取る)。
             parts: 一致した各パート(ChainEntry のリスト、3件)。
             app_version: 検出時に稼働していた discord-575-sniper のバージョン。
+
+        Returns:
+            挿入した行の id(chain_records.id)。PraiseTracker が「直前の詠み」を
+            識別するための source_id として使う。
         """
         detected_at = datetime.now(timezone.utc).isoformat()
         pattern_str = "-".join(str(n) for n in pattern)
@@ -231,7 +260,7 @@ class RecordStore:
             ensure_ascii=False,
         )
         with self._lock:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 """
                 INSERT INTO chain_records (
                     detected_at, guild_id, channel_id, kind, pattern, parts_json, app_version
@@ -240,6 +269,45 @@ class RecordStore:
                 (detected_at, guild_id, channel_id, kind, pattern_str, parts_json, app_version),
             )
             self._conn.commit()
+            return cursor.lastrowid
+
+    def register_praise(self, *, source: str, source_id: int, user_id: int) -> int | None:
+        """指定した詠みへの「あっぱれ」を1件記録する。
+
+        Args:
+            source: 詠みの由来。"record"(単一メッセージ検出)または
+                "chain_record"(独吟・連歌検出)。
+            source_id: source に対応するテーブル(records/chain_records)の id。
+            user_id: あっぱれを送ったユーザーの ID。
+
+        Returns:
+            加算後のあっぱれカウント数。指定したユーザーがその詠みに対して
+            既にあっぱれ済みの場合は、カウントを加算せず None を返す。
+        """
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT 1 FROM praise_users WHERE source = ? AND source_id = ? AND user_id = ?",
+                (source, source_id, user_id),
+            ).fetchone()
+            if existing is not None:
+                return None
+            self._conn.execute(
+                "INSERT INTO praise_users (source, source_id, user_id) VALUES (?, ?, ?)",
+                (source, source_id, user_id),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO praises (source, source_id, count) VALUES (?, ?, 1)
+                ON CONFLICT(source, source_id) DO UPDATE SET count = count + 1
+                """,
+                (source, source_id),
+            )
+            row = self._conn.execute(
+                "SELECT count FROM praises WHERE source = ? AND source_id = ?",
+                (source, source_id),
+            ).fetchone()
+            self._conn.commit()
+            return row[0]
 
     _PICKABLE_COLUMNS = frozenset({"part1", "part2", "part3", "part4", "part5"})
 
