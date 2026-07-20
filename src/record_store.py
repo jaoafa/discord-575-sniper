@@ -24,6 +24,15 @@ class RecordSummary:
 _KEYWORD_COLUMNS = ("part1", "part2", "part3", "part4", "part5")
 
 
+def _escape_like_pattern(keyword: str) -> str:
+    """LIKE 検索用に keyword 中のワイルドカード文字(%, _)をエスケープする。
+
+    エスケープしないと keyword に含まれる % や _ がユーザーの意図しない
+    ワイルドカードとして働き、部分一致の絞り込み結果が想定と異なってしまう。
+    """
+    return keyword.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+
 def _build_keyword_clause(keyword: str | None) -> tuple[str, list[object]]:
     """keyword による絞り込み条件(部分一致)の SQL 断片とプレースホルダ用パラメータを組み立てる。
 
@@ -31,8 +40,8 @@ def _build_keyword_clause(keyword: str | None) -> tuple[str, list[object]]:
     """
     if keyword is None:
         return "", []
-    clause = " AND (" + " OR ".join(f"{c} LIKE ?" for c in _KEYWORD_COLUMNS) + ")"
-    pattern = f"%{keyword}%"
+    clause = " AND (" + " OR ".join(f"{c} LIKE ? ESCAPE '\\'" for c in _KEYWORD_COLUMNS) + ")"
+    pattern = f"%{_escape_like_pattern(keyword)}%"
     return clause, [pattern] * len(_KEYWORD_COLUMNS)
 
 
@@ -40,8 +49,8 @@ class RecordStore:
     """検出した川柳を SQLite に永続化するクラス。
 
     件数・期間の制限は設けず、全件を永続的に保存する
-    (レコードのローテーションは今回のスコープ外だが、投稿者自身による
-    個別削除は `delete_record` でサポートする)。
+    (レコードのローテーションは今回のスコープ外だが、投稿者自身による個別削除は
+    `delete_record` でサポートする)。
     """
 
     def __init__(self, db_path: str):

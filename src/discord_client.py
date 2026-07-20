@@ -207,8 +207,8 @@ async def handle_delete_execute(
 def _format_record_option_label(record: RecordSummary) -> str:
     """RecordSummary から Select Menu の選択肢ラベル用の短いプレビュー文字列を組み立てる。
 
-    Discord の SelectOption.label は100文字までのため、超える場合は末尾を切り詰め
-    省略記号(…)を付与する。
+    Discord の SelectOption.label は _OPTION_LABEL_MAX_LENGTH 文字までのため、
+    超える場合は末尾を切り詰め省略記号(…)を付与する。
     """
     parts = [p for p in (record.part1, record.part2, record.part3, record.part4, record.part5) if p]
     label = " / ".join(parts)
@@ -232,8 +232,8 @@ def _format_delete_list_content(total_count: int) -> str:
 class _DeleteBaseView(discord.ui.View):
     """/senryu delete の各画面(一覧・確認)が共有する土台。
 
-    実行者以外の操作拒否と、タイムアウト時にコンポーネントを無効化してメッセージへ
-    反映する共通処理をまとめる。一覧・確認の2画面はこれを継承する。
+    実行者以外の操作拒否と、タイムアウト時にコンポーネントを無効化してメッセージへ反映する
+    共通処理をまとめる。一覧・確認の2画面はこれを継承する。
     """
 
     def __init__(self, *, user_id: int) -> None:
@@ -349,13 +349,20 @@ class DeleteRecordView(_DeleteBaseView):
 
     async def _go_to_page(self, interaction: discord.Interaction, new_offset: int) -> None:
         """指定オフセットの一覧を取得し直し、メッセージを差し替える。"""
-        records, total_count = await handle_delete_list(
-            self._record_store,
-            channel_id=self._channel_id,
-            user_id=self._user_id,
-            keyword=self._keyword,
-            offset=new_offset,
-        )
+        try:
+            records, total_count = await handle_delete_list(
+                self._record_store,
+                channel_id=self._channel_id,
+                user_id=self._user_id,
+                keyword=self._keyword,
+                offset=new_offset,
+            )
+        except Exception:
+            logger.exception("削除対象記録の取得に失敗しました。")
+            await interaction.response.edit_message(
+                content="記録の取得に失敗しました。時間を置いて再度お試しください。", view=None,
+            )
+            return
         new_view = DeleteRecordView(
             record_store=self._record_store,
             channel_id=self._channel_id,
@@ -402,9 +409,16 @@ class DeleteConfirmView(_DeleteBaseView):
 
     async def _on_confirm(self, interaction: discord.Interaction) -> None:
         """「削除する」押下時、対象記録を削除し結果をメッセージに反映する。"""
-        deleted = await handle_delete_execute(
-            self._record_store, record_id=self._record.id, user_id=self._user_id,
-        )
+        try:
+            deleted = await handle_delete_execute(
+                self._record_store, record_id=self._record.id, user_id=self._user_id,
+            )
+        except Exception:
+            logger.exception("記録の削除に失敗しました。")
+            await interaction.response.edit_message(
+                content="削除に失敗しました。時間を置いて再度お試しください。", view=None,
+            )
+            return
         if deleted:
             content = "削除しました。"
         else:
@@ -413,13 +427,20 @@ class DeleteConfirmView(_DeleteBaseView):
 
     async def _on_cancel(self, interaction: discord.Interaction) -> None:
         """「キャンセル」押下時、一覧表示(現在ページ)に戻す。"""
-        records, total_count = await handle_delete_list(
-            self._record_store,
-            channel_id=self._channel_id,
-            user_id=self._user_id,
-            keyword=self._keyword,
-            offset=self._offset,
-        )
+        try:
+            records, total_count = await handle_delete_list(
+                self._record_store,
+                channel_id=self._channel_id,
+                user_id=self._user_id,
+                keyword=self._keyword,
+                offset=self._offset,
+            )
+        except Exception:
+            logger.exception("削除対象記録の取得に失敗しました。")
+            await interaction.response.edit_message(
+                content="記録の取得に失敗しました。時間を置いて再度お試しください。", view=None,
+            )
+            return
         list_view = DeleteRecordView(
             record_store=self._record_store,
             channel_id=self._channel_id,

@@ -642,3 +642,21 @@ def test_delete_record_returns_false_when_record_id_not_found(tmp_path):
     deleted = store.delete_record(record_id=99999, user_id=42)
 
     assert deleted is False
+
+
+def test_list_records_by_user_treats_percent_in_keyword_as_literal(tmp_path):
+    """keyword に含まれる % がワイルドカードでなくリテラルとして扱われることを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("50%オフ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=2,
+        parts=("50個", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+
+    records = store.list_records_by_user(channel_id=111, user_id=42, keyword="50%", limit=25, offset=0)
+
+    assert [r.part1 for r in records] == ["50%オフ"]

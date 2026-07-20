@@ -209,6 +209,7 @@ class FakeUser:
     """discord.abc.User の代わりに使うスタブ。"""
 
     def __init__(self, user_id: int):
+        """user_id を受け取り、スタブを初期化する。"""
         self.id = user_id
 
 
@@ -216,6 +217,7 @@ class FakeResponse:
     """discord.InteractionResponse の代わりに使うスタブ。呼び出し内容を記録する。"""
 
     def __init__(self):
+        """呼び出し記録用のリストを初期化する。"""
         self.edit_message_calls = []
         self.send_message_calls = []
 
@@ -232,6 +234,7 @@ class FakeInteractionMessage:
     """discord.Message の代わりに使うスタブ。edit 呼び出しを記録する。"""
 
     def __init__(self):
+        """呼び出し記録用のリストを初期化する。"""
         self.edit_calls = []
 
     async def edit(self, **kwargs):
@@ -243,6 +246,7 @@ class FakeInteraction:
     """discord.Interaction の代わりに使うスタブ。"""
 
     def __init__(self, user_id: int):
+        """user_id を受け取り、関連するスタブ群を組み立てる。"""
         self.user = FakeUser(user_id)
         self.response = FakeResponse()
         self.message = FakeInteractionMessage()
