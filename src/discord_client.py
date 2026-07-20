@@ -267,6 +267,110 @@ class _DeleteBaseView(discord.ui.View):
             )
 
 
+class DeleteRecordView(_DeleteBaseView):
+    """/senryu delete の一覧・ページネーション画面を担当する View。"""
+
+    def __init__(
+        self,
+        *,
+        record_store: RecordStore,
+        channel_id: int,
+        user_id: int,
+        keyword: str | None,
+        offset: int,
+        records: list[RecordSummary],
+        total_count: int,
+    ) -> None:
+        """一覧に表示する records と総件数から Select Menu・ページ送り Button を組み立てる。"""
+        super().__init__(user_id=user_id)
+        self._record_store = record_store
+        self._channel_id = channel_id
+        self._keyword = keyword
+        self._offset = offset
+        self._records = records
+        self._total_count = total_count
+
+        self._select: discord.ui.Select = discord.ui.Select(
+            placeholder="削除する記録を選んでください",
+            options=[
+                discord.SelectOption(label=_format_record_option_label(r), value=str(r.id))
+                for r in records
+            ] or [discord.SelectOption(label="(該当する記録がありません)", value="none")],
+            disabled=not records,
+        )
+        self._select.callback = self._on_select
+        self.add_item(self._select)
+
+        prev_button = discord.ui.Button(
+            label="◀ 前へ", style=discord.ButtonStyle.secondary,
+            disabled=offset <= 0,
+        )
+        prev_button.callback = self._on_prev
+        self.add_item(prev_button)
+
+        next_button = discord.ui.Button(
+            label="次へ ▶", style=discord.ButtonStyle.secondary,
+            disabled=offset + len(records) >= total_count,
+        )
+        next_button.callback = self._on_next
+        self.add_item(next_button)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        """Select Menu で1件選択された際に削除確認画面へ遷移する。"""
+        record_id = int(self._select.values[0])
+        record = next((r for r in self._records if r.id == record_id), None)
+        if record is None:
+            await interaction.response.edit_message(
+                content="この記録は既に削除されているか、一覧が古くなっています。"
+                "再度 `/senryu delete` を実行してください。",
+                view=None,
+            )
+            return
+        confirm_view = DeleteConfirmView(
+            record_store=self._record_store,
+            record=record,
+            user_id=self._user_id,
+            channel_id=self._channel_id,
+            keyword=self._keyword,
+            offset=self._offset,
+        )
+        await interaction.response.edit_message(
+            content=_format_record_preview(record), view=confirm_view,
+        )
+        confirm_view.message = interaction.message
+
+    async def _on_prev(self, interaction: discord.Interaction) -> None:
+        """「前へ」ボタン押下時、1ページ前の一覧に差し替える。"""
+        await self._go_to_page(interaction, self._offset - _PAGE_SIZE)
+
+    async def _on_next(self, interaction: discord.Interaction) -> None:
+        """「次へ」ボタン押下時、1ページ後の一覧に差し替える。"""
+        await self._go_to_page(interaction, self._offset + _PAGE_SIZE)
+
+    async def _go_to_page(self, interaction: discord.Interaction, new_offset: int) -> None:
+        """指定オフセットの一覧を取得し直し、メッセージを差し替える。"""
+        records, total_count = await handle_delete_list(
+            self._record_store,
+            channel_id=self._channel_id,
+            user_id=self._user_id,
+            keyword=self._keyword,
+            offset=new_offset,
+        )
+        new_view = DeleteRecordView(
+            record_store=self._record_store,
+            channel_id=self._channel_id,
+            user_id=self._user_id,
+            keyword=self._keyword,
+            offset=new_offset,
+            records=records,
+            total_count=total_count,
+        )
+        await interaction.response.edit_message(
+            content=_format_delete_list_content(total_count), view=new_view,
+        )
+        new_view.message = interaction.message
+
+
 def create_bot(
     guild_id: int,
     config_store: ConfigStore,

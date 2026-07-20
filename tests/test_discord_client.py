@@ -3,6 +3,7 @@ import pytest
 
 from src.config_store import ConfigStore
 from src.discord_client import (
+    DeleteRecordView,
     _DeleteBaseView,
     _format_record_option_label,
     _format_record_preview,
@@ -325,3 +326,103 @@ async def test_delete_base_view_on_timeout_disables_items_and_edits_message():
     assert button.disabled is True
     assert len(message.edit_calls) == 1
     assert "タイムアウト" in message.edit_calls[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_delete_record_view_builds_select_options_from_records(record_store):
+    """渡された records から Select Menu の選択肢が構築されることを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    records, total_count = await handle_delete_list(
+        record_store, channel_id=111, user_id=42, keyword=None, offset=0,
+    )
+
+    view = DeleteRecordView(
+        record_store=record_store, channel_id=111, user_id=42, keyword=None,
+        offset=0, records=records, total_count=total_count,
+    )
+
+    assert len(view._select.options) == 1
+    assert view._select.options[0].label == "あ / い / う"
+    assert view._select.options[0].value == str(records[0].id)
+
+
+@pytest.mark.asyncio
+async def test_delete_record_view_disables_prev_button_on_first_page(record_store):
+    """先頭ページでは「前へ」ボタンが無効化されていることを確認する。"""
+    view = DeleteRecordView(
+        record_store=record_store, channel_id=111, user_id=42, keyword=None,
+        offset=0, records=[], total_count=0,
+    )
+
+    buttons = [item for item in view.children if isinstance(item, discord.ui.Button)]
+    prev_button = next(b for b in buttons if b.label == "◀ 前へ")
+
+    assert prev_button.disabled is True
+
+
+@pytest.mark.asyncio
+async def test_delete_record_view_disables_next_button_on_last_page(record_store):
+    """最終ページでは「次へ」ボタンが無効化されていることを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    records, total_count = await handle_delete_list(
+        record_store, channel_id=111, user_id=42, keyword=None, offset=0,
+    )
+
+    view = DeleteRecordView(
+        record_store=record_store, channel_id=111, user_id=42, keyword=None,
+        offset=0, records=records, total_count=total_count,
+    )
+
+    buttons = [item for item in view.children if isinstance(item, discord.ui.Button)]
+    next_button = next(b for b in buttons if b.label == "次へ ▶")
+
+    assert next_button.disabled is True
+
+
+@pytest.mark.asyncio
+async def test_delete_record_view_select_reports_stale_record(record_store):
+    """一覧取得後に消えた record_id が選択された場合、古い一覧である旨のメッセージを返すことを確認する。"""
+    view = DeleteRecordView(
+        record_store=record_store, channel_id=111, user_id=42, keyword=None,
+        offset=0, records=[], total_count=0,
+    )
+    interaction = FakeInteraction(user_id=42)
+    view._select._values = ["99999"]
+
+    await view._on_select(interaction)
+
+    assert len(interaction.response.edit_message_calls) == 1
+    call = interaction.response.edit_message_calls[0]
+    assert "既に削除されている" in call["content"]
+    assert call["view"] is None
+
+
+@pytest.mark.asyncio
+async def test_delete_record_view_next_button_advances_page(record_store):
+    """「次へ」ボタン押下で offset が _PAGE_SIZE だけ進んだ一覧に差し替わることを確認する。"""
+    for i in range(30):
+        record_store.add_record(
+            guild_id=1, channel_id=111, user_id=42, message_id=i,
+            parts=(f"part{i}", "い", "う"), morphemes=[], app_version="1.0.0",
+        )
+    records, total_count = await handle_delete_list(
+        record_store, channel_id=111, user_id=42, keyword=None, offset=0,
+    )
+    view = DeleteRecordView(
+        record_store=record_store, channel_id=111, user_id=42, keyword=None,
+        offset=0, records=records, total_count=total_count,
+    )
+    interaction = FakeInteraction(user_id=42)
+
+    await view._on_next(interaction)
+
+    assert len(interaction.response.edit_message_calls) == 1
+    new_view = interaction.response.edit_message_calls[0]["view"]
+    assert isinstance(new_view, DeleteRecordView)
+    assert new_view._offset == 25
