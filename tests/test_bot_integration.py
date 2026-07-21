@@ -432,6 +432,57 @@ async def test_on_message_does_not_chain_across_180_seconds(client, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_senryu_delete_command_is_registered(client):
+    """/senryu delete サブコマンドがコマンドツリーに登録されていることを確認する。"""
+    senryu_group = client.tree.get_command("senryu", guild=discord.Object(id=GUILD_ID))
+
+    assert senryu_group is not None
+    assert any(cmd.name == "delete" for cmd in senryu_group.commands)
+
+
+class FakeCommandResponse:
+    """/senryu delete コマンドの interaction.response の代わりに使うスタブ。"""
+
+    def __init__(self):
+        """呼び出し記録用のリストを初期化する。"""
+        self.send_message_calls = []
+
+    async def send_message(self, *args, **kwargs):
+        """send_message 呼び出しの引数を記録する。"""
+        self.send_message_calls.append((args, kwargs))
+
+
+class FakeCommandInteraction:
+    """/senryu delete コマンドのコールバックへ直接渡すためのスタブ。"""
+
+    def __init__(self, channel_id: int, user_id: int):
+        """channel_id・user_id を受け取り、関連するスタブ群を組み立てる。"""
+        self.channel_id = channel_id
+        self.user = FakeAuthor(author_id=user_id)
+        self.response = FakeCommandResponse()
+
+
+@pytest.mark.asyncio
+async def test_senryu_delete_command_reports_error_when_list_fails(client, record_store, monkeypatch):
+    """記録取得が失敗した場合、フレンドリーなエラーメッセージを ephemeral で返すことを確認する。"""
+
+    def raise_error(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(record_store, "count_records_by_user", raise_error)
+    senryu_group = client.tree.get_command("senryu", guild=discord.Object(id=GUILD_ID))
+    delete_command = next(cmd for cmd in senryu_group.commands if cmd.name == "delete")
+    interaction = FakeCommandInteraction(channel_id=CHANNEL_ID, user_id=5000)
+
+    await delete_command.callback(interaction, keyword=None)
+
+    assert len(interaction.response.send_message_calls) == 1
+    args, kwargs = interaction.response.send_message_calls[0]
+    assert "取得に失敗" in args[0]
+    assert kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
 async def test_on_message_replies_appare_after_senryu_detected(client):
     """川柳検出直後に「あっぱれ」を送ると、あっぱれ頂きました(1)と返信されることを確認する。"""
     detect_message = FakeMessage(

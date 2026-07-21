@@ -8,7 +8,7 @@ import discord
 from discord import app_commands
 
 from .config_store import ConfigStore
-from .record_store import RecordStore
+from .record_store import RecordStore, RecordSummary
 from .senryu.chain import ChainMatch, ChainTracker
 from .senryu.finder import Candidate, find_candidates, pick_best
 from .senryu.praise import LastSenryu, PraiseTracker
@@ -127,6 +127,10 @@ async def handle_status(config_store: ConfigStore, channel_id: int, parent_id: i
     return f"このチャンネルの川柳検出は現在「{state}」です。"
 
 
+_PAGE_SIZE = 25
+_DELETE_VIEW_TIMEOUT = 180.0
+_OPTION_LABEL_MAX_LENGTH = 100
+
 _REMIX_PARTS: tuple[tuple[str, bool], ...] = (
     ("part1", False),
     ("part2", False),
@@ -153,6 +157,309 @@ async def handle_remix(record_store: RecordStore, channel_id: int) -> str:
         picks.append(pick)
     lines = "\n".join(f"> {text} (<@{user_id}>)" for text, user_id in picks)
     return f"🎋 過去の記録から短歌を合成しました！\n{lines}"
+
+
+async def handle_delete_list(
+    record_store: RecordStore,
+    *,
+    channel_id: int,
+    user_id: int,
+    keyword: str | None,
+    offset: int,
+) -> tuple[list[RecordSummary], int]:
+    """指定チャンネルで実行者自身が投稿した削除対象候補を1ページ分取得する。
+
+    Args:
+        record_store: 記録の永続化を担う RecordStore。
+        channel_id: 対象チャンネルの ID。
+        user_id: コマンド実行者の ID。
+        keyword: 指定した場合、いずれかの句に部分一致するレコードのみに絞り込む。
+        offset: 何件目からを取得するか(0始まり)。
+
+    Returns:
+        (records, total_count) のタプル。records は最大 _PAGE_SIZE 件、
+        total_count は絞り込み後の総件数(ページネーション用)。
+    """
+    total_count = await asyncio.to_thread(
+        record_store.count_records_by_user,
+        channel_id=channel_id, user_id=user_id, keyword=keyword,
+    )
+    records = await asyncio.to_thread(
+        record_store.list_records_by_user,
+        channel_id=channel_id, user_id=user_id, keyword=keyword,
+        limit=_PAGE_SIZE, offset=offset,
+    )
+    return records, total_count
+
+
+async def handle_delete_execute(
+    record_store: RecordStore, *, record_id: int, user_id: int,
+) -> bool:
+    """指定 record_id の記録を、user_id が一致する場合のみ削除する。
+
+    Args:
+        record_store: 記録の永続化を担う RecordStore。
+        record_id: 削除対象の records.id。
+        user_id: 削除を要求している実行者の ID。
+
+    Returns:
+        削除できた場合 True、対象が存在しない・他人の記録だった場合 False。
+    """
+    return await asyncio.to_thread(
+        record_store.delete_record, record_id=record_id, user_id=user_id,
+    )
+
+
+def _format_record_option_label(record: RecordSummary) -> str:
+    """RecordSummary から Select Menu の選択肢ラベル用の短いプレビュー文字列を組み立てる。
+
+    Discord の SelectOption.label は _OPTION_LABEL_MAX_LENGTH 文字までのため、
+    超える場合は末尾を切り詰め省略記号(…)を付与する。
+    """
+    parts = [p for p in (record.part1, record.part2, record.part3, record.part4, record.part5) if p]
+    label = " / ".join(parts)
+    if len(label) > _OPTION_LABEL_MAX_LENGTH:
+        label = label[: _OPTION_LABEL_MAX_LENGTH - 1] + "…"
+    return label
+
+
+def _format_record_preview(record: RecordSummary) -> str:
+    """RecordSummary から削除確認画面に表示する全文プレビューを組み立てる。"""
+    parts = [p for p in (record.part1, record.part2, record.part3, record.part4, record.part5) if p]
+    lines = "\n".join(f"> {p}" for p in parts)
+    return f"以下の記録を削除しますか？\n{lines}"
+
+
+def _format_delete_list_content(total_count: int) -> str:
+    """一覧画面のメッセージ本文(件数表示)を組み立てる。"""
+    return f"削除する記録を選んでください。(全 {total_count} 件)"
+
+
+class _DeleteBaseView(discord.ui.View):
+    """/senryu delete の各画面(一覧・確認)が共有する土台。
+
+    実行者以外の操作拒否と、タイムアウト時にコンポーネントを無効化してメッセージへ反映する
+    共通処理をまとめる。一覧・確認の2画面はこれを継承する。
+    """
+
+    def __init__(self, *, user_id: int) -> None:
+        """実行者の user_id を受け取り、View を初期化する。
+
+        Args:
+            user_id: このコマンドを実行したユーザーの ID。interaction_check で
+                他ユーザーからの操作を拒否するために使う。
+        """
+        super().__init__(timeout=_DELETE_VIEW_TIMEOUT)
+        self._user_id = user_id
+        self.message: discord.Message | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """コマンド実行者以外の操作を拒否する。"""
+        if interaction.user.id != self._user_id:
+            await interaction.response.send_message(
+                content="この操作はコマンド実行者のみ行えます。", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        """タイムアウト時に全コンポーネントを無効化し、その旨をメッセージに反映する。"""
+        for item in self.children:
+            item.disabled = True
+        if self.message is not None:
+            await self.message.edit(
+                content="操作がタイムアウトしました。再度 `/senryu delete` を実行してください。",
+                view=self,
+            )
+
+
+class DeleteRecordView(_DeleteBaseView):
+    """/senryu delete の一覧・ページネーション画面を担当する View。"""
+
+    def __init__(
+        self,
+        *,
+        record_store: RecordStore,
+        channel_id: int,
+        user_id: int,
+        keyword: str | None,
+        offset: int,
+        records: list[RecordSummary],
+        total_count: int,
+    ) -> None:
+        """一覧に表示する records と総件数から Select Menu・ページ送り Button を組み立てる。"""
+        super().__init__(user_id=user_id)
+        self._record_store = record_store
+        self._channel_id = channel_id
+        self._keyword = keyword
+        self._offset = offset
+        self._records = records
+        self._total_count = total_count
+
+        self._select: discord.ui.Select = discord.ui.Select(
+            placeholder="削除する記録を選んでください",
+            options=[
+                discord.SelectOption(label=_format_record_option_label(r), value=str(r.id))
+                for r in records
+            ] or [discord.SelectOption(label="(該当する記録がありません)", value="none")],
+            disabled=not records,
+        )
+        self._select.callback = self._on_select
+        self.add_item(self._select)
+
+        prev_button = discord.ui.Button(
+            label="◀ 前へ", style=discord.ButtonStyle.secondary,
+            disabled=offset <= 0,
+        )
+        prev_button.callback = self._on_prev
+        self.add_item(prev_button)
+
+        next_button = discord.ui.Button(
+            label="次へ ▶", style=discord.ButtonStyle.secondary,
+            disabled=offset + len(records) >= total_count,
+        )
+        next_button.callback = self._on_next
+        self.add_item(next_button)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        """Select Menu で1件選択された際に削除確認画面へ遷移する。"""
+        record_id = int(self._select.values[0])
+        record = next((r for r in self._records if r.id == record_id), None)
+        if record is None:
+            await interaction.response.edit_message(
+                content="この記録は既に削除されているか、一覧が古くなっています。"
+                "再度 `/senryu delete` を実行してください。",
+                view=None,
+            )
+            return
+        confirm_view = DeleteConfirmView(
+            record_store=self._record_store,
+            record=record,
+            user_id=self._user_id,
+            channel_id=self._channel_id,
+            keyword=self._keyword,
+            offset=self._offset,
+        )
+        await interaction.response.edit_message(
+            content=_format_record_preview(record), view=confirm_view,
+        )
+        confirm_view.message = interaction.message
+
+    async def _on_prev(self, interaction: discord.Interaction) -> None:
+        """「前へ」ボタン押下時、1ページ前の一覧に差し替える。"""
+        await self._go_to_page(interaction, self._offset - _PAGE_SIZE)
+
+    async def _on_next(self, interaction: discord.Interaction) -> None:
+        """「次へ」ボタン押下時、1ページ後の一覧に差し替える。"""
+        await self._go_to_page(interaction, self._offset + _PAGE_SIZE)
+
+    async def _go_to_page(self, interaction: discord.Interaction, new_offset: int) -> None:
+        """指定オフセットの一覧を取得し直し、メッセージを差し替える。"""
+        try:
+            records, total_count = await handle_delete_list(
+                self._record_store,
+                channel_id=self._channel_id,
+                user_id=self._user_id,
+                keyword=self._keyword,
+                offset=new_offset,
+            )
+        except Exception:
+            logger.exception("削除対象記録の取得に失敗しました。")
+            await interaction.response.edit_message(
+                content="記録の取得に失敗しました。時間を置いて再度お試しください。", view=None,
+            )
+            return
+        new_view = DeleteRecordView(
+            record_store=self._record_store,
+            channel_id=self._channel_id,
+            user_id=self._user_id,
+            keyword=self._keyword,
+            offset=new_offset,
+            records=records,
+            total_count=total_count,
+        )
+        await interaction.response.edit_message(
+            content=_format_delete_list_content(total_count), view=new_view,
+        )
+        new_view.message = interaction.message
+
+
+class DeleteConfirmView(_DeleteBaseView):
+    """/senryu delete の削除確認画面(削除する/キャンセル)を担当する View。"""
+
+    def __init__(
+        self,
+        *,
+        record_store: RecordStore,
+        record: RecordSummary,
+        user_id: int,
+        channel_id: int,
+        keyword: str | None,
+        offset: int,
+    ) -> None:
+        """確認対象の1件(record)と、キャンセル時に戻る一覧の状態を受け取り初期化する。"""
+        super().__init__(user_id=user_id)
+        self._record_store = record_store
+        self._record = record
+        self._channel_id = channel_id
+        self._keyword = keyword
+        self._offset = offset
+
+        confirm_button = discord.ui.Button(label="削除する", style=discord.ButtonStyle.danger)
+        confirm_button.callback = self._on_confirm
+        self.add_item(confirm_button)
+
+        cancel_button = discord.ui.Button(label="キャンセル", style=discord.ButtonStyle.secondary)
+        cancel_button.callback = self._on_cancel
+        self.add_item(cancel_button)
+
+    async def _on_confirm(self, interaction: discord.Interaction) -> None:
+        """「削除する」押下時、対象記録を削除し結果をメッセージに反映する。"""
+        try:
+            deleted = await handle_delete_execute(
+                self._record_store, record_id=self._record.id, user_id=self._user_id,
+            )
+        except Exception:
+            logger.exception("記録の削除に失敗しました。")
+            await interaction.response.edit_message(
+                content="削除に失敗しました。時間を置いて再度お試しください。", view=None,
+            )
+            return
+        if deleted:
+            content = "削除しました。"
+        else:
+            content = "この記録は既に削除されているか、削除する権限がありません。"
+        await interaction.response.edit_message(content=content, view=None)
+
+    async def _on_cancel(self, interaction: discord.Interaction) -> None:
+        """「キャンセル」押下時、一覧表示(現在ページ)に戻す。"""
+        try:
+            records, total_count = await handle_delete_list(
+                self._record_store,
+                channel_id=self._channel_id,
+                user_id=self._user_id,
+                keyword=self._keyword,
+                offset=self._offset,
+            )
+        except Exception:
+            logger.exception("削除対象記録の取得に失敗しました。")
+            await interaction.response.edit_message(
+                content="記録の取得に失敗しました。時間を置いて再度お試しください。", view=None,
+            )
+            return
+        list_view = DeleteRecordView(
+            record_store=self._record_store,
+            channel_id=self._channel_id,
+            user_id=self._user_id,
+            keyword=self._keyword,
+            offset=self._offset,
+            records=records,
+            total_count=total_count,
+        )
+        await interaction.response.edit_message(
+            content=_format_delete_list_content(total_count), view=list_view,
+        )
+        list_view.message = interaction.message
 
 
 def _is_self_bot_message(message: discord.Message, client: discord.Client) -> bool:
@@ -444,6 +751,50 @@ def create_bot(
             return
         await interaction.response.send_message(message)
 
+    @senryu_group.command(name="delete", description="このチャンネルで自分が投稿した記録を選んで削除します")
+    @app_commands.describe(keyword="記録を絞り込むキーワード(部分一致・任意)")
+    async def delete(interaction: discord.Interaction, keyword: str | None = None):
+        """`/senryu delete` コマンドを処理し、記録の削除 UI を表示する。"""
+        if interaction.channel_id is None:
+            await interaction.response.send_message(
+                "このコマンドはチャンネル内でのみ使用できます。", ephemeral=True
+            )
+            return
+        try:
+            records, total_count = await handle_delete_list(
+                record_store,
+                channel_id=interaction.channel_id,
+                user_id=interaction.user.id,
+                keyword=keyword,
+                offset=0,
+            )
+        except Exception:
+            logger.exception("削除対象記録の取得に失敗しました。")
+            await interaction.response.send_message(
+                "記録の取得に失敗しました。時間を置いて再度お試しください。", ephemeral=True
+            )
+            return
+        if not records:
+            await interaction.response.send_message(
+                "削除できる記録が見つかりませんでした。", ephemeral=True
+            )
+            return
+        view = DeleteRecordView(
+            record_store=record_store,
+            channel_id=interaction.channel_id,
+            user_id=interaction.user.id,
+            keyword=keyword,
+            offset=0,
+            records=records,
+            total_count=total_count,
+        )
+        await interaction.response.send_message(
+            content=_format_delete_list_content(total_count),
+            view=view,
+            ephemeral=True,
+        )
+        view.message = await interaction.original_response()
+
     @tree.error
     async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
         """スラッシュコマンド実行時のエラーをログに残し、ユーザーへ簡潔に通知する。"""
@@ -460,4 +811,6 @@ def create_bot(
 
     tree.add_command(senryu_group, guild=guild_object)
 
+    # テストからコマンドツリーの登録状態を検証できるよう、Client に保持しておく。
+    client.tree = tree
     return client

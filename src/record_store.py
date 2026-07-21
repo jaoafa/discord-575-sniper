@@ -1,17 +1,56 @@
 import json
 import sqlite3
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .senryu.chain import ChainEntry
 from .senryu.tokenizer import Morpheme
 
 
+@dataclass
+class RecordSummary:
+    """/senryu delete の一覧・プレビュー表示に必要な records の要約情報。"""
+
+    id: int
+    part1: str
+    part2: str
+    part3: str
+    part4: str | None
+    part5: str | None
+    detected_at: str
+
+
+_KEYWORD_COLUMNS = ("part1", "part2", "part3", "part4", "part5")
+
+
+def _escape_like_pattern(keyword: str) -> str:
+    """LIKE 検索用に keyword 中のワイルドカード文字(%, _)をエスケープする。
+
+    エスケープしないと keyword に含まれる % や _ がユーザーの意図しない
+    ワイルドカードとして働き、部分一致の絞り込み結果が想定と異なってしまう。
+    """
+    return keyword.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+
+def _build_keyword_clause(keyword: str | None) -> tuple[str, list[object]]:
+    """keyword による絞り込み条件(部分一致)の SQL 断片とプレースホルダ用パラメータを組み立てる。
+
+    keyword が None の場合は絞り込みなし(空文字列・空リスト)を返す。
+    """
+    if keyword is None:
+        return "", []
+    clause = " AND (" + " OR ".join(f"{c} LIKE ? ESCAPE '\\'" for c in _KEYWORD_COLUMNS) + ")"
+    pattern = f"%{_escape_like_pattern(keyword)}%"
+    return clause, [pattern] * len(_KEYWORD_COLUMNS)
+
+
 class RecordStore:
     """検出した川柳を SQLite に永続化するクラス。
 
     件数・期間の制限は設けず、全件を永続的に保存する
-    (削除・ローテーションは今回のスコープ外)。
+    (レコードのローテーションは今回のスコープ外だが、投稿者自身による個別削除は
+    `delete_record` でサポートする)。
     """
 
     def __init__(self, db_path: str):
@@ -305,3 +344,78 @@ class RecordStore:
         if row is None:
             return None
         return (row[0], row[1])
+
+    def count_records_by_user(
+        self, *, channel_id: int, user_id: int, keyword: str | None = None
+    ) -> int:
+        """指定チャンネル・投稿者の records 件数を数える(delete コマンドのページネーション用)。
+
+        Args:
+            channel_id: 対象チャンネルの ID。
+            user_id: 対象投稿者の ID。
+            keyword: 指定した場合、part1〜part5 のいずれかに部分一致するレコードのみを数える。
+
+        Returns:
+            条件に一致する records の件数。
+        """
+        keyword_clause, keyword_params = _build_keyword_clause(keyword)
+        query = (
+            "SELECT COUNT(*) FROM records WHERE channel_id = ? AND user_id = ?" + keyword_clause
+        )
+        params: list[object] = [channel_id, user_id, *keyword_params]
+        with self._lock:
+            row = self._conn.execute(query, params).fetchone()
+        return row[0]
+
+    def list_records_by_user(
+        self, *, channel_id: int, user_id: int, keyword: str | None = None,
+        limit: int, offset: int,
+    ) -> list[RecordSummary]:
+        """指定チャンネル・投稿者の records を新しい順に limit/offset でページ取得する。
+
+        Args:
+            channel_id: 対象チャンネルの ID。
+            user_id: 対象投稿者の ID。
+            keyword: 指定した場合、part1〜part5 のいずれかに部分一致するレコードのみを対象にする。
+            limit: 取得する最大件数。
+            offset: 何件目からを取得するか(0始まり)。
+
+        Returns:
+            detected_at の新しい順に並んだ RecordSummary のリスト。
+        """
+        keyword_clause, keyword_params = _build_keyword_clause(keyword)
+        query = "".join((
+            "SELECT id, part1, part2, part3, part4, part5, detected_at FROM records "
+            "WHERE channel_id = ? AND user_id = ?",
+            keyword_clause,
+            " ORDER BY detected_at DESC LIMIT ? OFFSET ?",
+        ))
+        params: list[object] = [channel_id, user_id, *keyword_params, limit, offset]
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        return [
+            RecordSummary(
+                id=row[0], part1=row[1], part2=row[2], part3=row[3],
+                part4=row[4], part5=row[5], detected_at=row[6],
+            )
+            for row in rows
+        ]
+
+    def delete_record(self, *, record_id: int, user_id: int) -> bool:
+        """record_id かつ user_id が一致する records を1件削除する。
+
+        Args:
+            record_id: 削除対象の records.id。
+            user_id: 削除を要求している投稿者の ID。record_id の行の user_id と
+                一致しない場合は削除しない(他人の記録を削除できないようにするため)。
+
+        Returns:
+            削除できた(1行 DELETE できた)場合 True。該当行が無かった
+            (存在しない、既に削除済み、user_id が一致しない)場合 False。
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM records WHERE id = ? AND user_id = ?", (record_id, user_id),
+            )
+            self._conn.commit()
+        return cursor.rowcount > 0

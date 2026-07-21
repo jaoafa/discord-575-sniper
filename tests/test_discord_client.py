@@ -1,14 +1,22 @@
+import discord
 import pytest
 
 from src.config_store import ConfigStore
 from src.discord_client import (
+    DeleteConfirmView,
+    DeleteRecordView,
+    _DeleteBaseView,
+    _format_record_option_label,
+    _format_record_preview,
     build_reply,
+    handle_delete_execute,
+    handle_delete_list,
     handle_disable,
     handle_enable,
     handle_remix,
     handle_status,
 )
-from src.record_store import RecordStore
+from src.record_store import RecordStore, RecordSummary
 
 
 def test_build_reply_detects_575_famous_example():
@@ -132,3 +140,385 @@ async def test_handle_remix_reports_shortage_when_no_tanka_records(record_store)
     message = await handle_remix(record_store, channel_id=111)
 
     assert "足り" in message
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_list_returns_empty_when_no_records(record_store):
+    """該当レコードが1件も無い場合、空リストと件数0を返すことを確認する。"""
+    records, total_count = await handle_delete_list(
+        record_store, channel_id=111, user_id=42, keyword=None, offset=0,
+    )
+
+    assert records == []
+    assert total_count == 0
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_list_returns_own_records_newest_first(record_store):
+    """実行者自身のレコードを新しい順に返すことを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=2,
+        parts=("か", "き", "く"), morphemes=[], app_version="1.0.0",
+    )
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=999, message_id=3,
+        parts=("さ", "し", "す"), morphemes=[], app_version="1.0.0",
+    )
+
+    records, total_count = await handle_delete_list(
+        record_store, channel_id=111, user_id=42, keyword=None, offset=0,
+    )
+
+    assert total_count == 2
+    assert [r.part1 for r in records] == ["か", "あ"]
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_execute_deletes_own_record(record_store):
+    """実行者自身のレコードを削除し True を返すことを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    record = record_store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)[0]
+
+    deleted = await handle_delete_execute(record_store, record_id=record.id, user_id=42)
+
+    assert deleted is True
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_execute_rejects_other_users_record(record_store):
+    """他人のレコードは削除できず False を返すことを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    record = record_store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)[0]
+
+    deleted = await handle_delete_execute(record_store, record_id=record.id, user_id=999)
+
+    assert deleted is False
+
+
+class FakeUser:
+    """discord.abc.User の代わりに使うスタブ。"""
+
+    def __init__(self, user_id: int):
+        """user_id を受け取り、スタブを初期化する。"""
+        self.id = user_id
+
+
+class FakeResponse:
+    """discord.InteractionResponse の代わりに使うスタブ。呼び出し内容を記録する。"""
+
+    def __init__(self):
+        """呼び出し記録用のリストを初期化する。"""
+        self.edit_message_calls = []
+        self.send_message_calls = []
+
+    async def edit_message(self, **kwargs):
+        """edit_message 呼び出しの引数を記録する。"""
+        self.edit_message_calls.append(kwargs)
+
+    async def send_message(self, **kwargs):
+        """send_message 呼び出しの引数を記録する。"""
+        self.send_message_calls.append(kwargs)
+
+
+class FakeInteractionMessage:
+    """discord.Message の代わりに使うスタブ。edit 呼び出しを記録する。"""
+
+    def __init__(self):
+        """呼び出し記録用のリストを初期化する。"""
+        self.edit_calls = []
+
+    async def edit(self, **kwargs):
+        """edit 呼び出しの引数を記録する。"""
+        self.edit_calls.append(kwargs)
+
+
+class FakeInteraction:
+    """discord.Interaction の代わりに使うスタブ。"""
+
+    def __init__(self, user_id: int):
+        """user_id を受け取り、関連するスタブ群を組み立てる。"""
+        self.user = FakeUser(user_id)
+        self.response = FakeResponse()
+        self.message = FakeInteractionMessage()
+
+
+def test_format_record_option_label_joins_parts_with_slash():
+    """複数パートを " / " 区切りで連結したラベルを組み立てることを確認する。"""
+    record = RecordSummary(
+        id=1, part1="あ", part2="い", part3="う", part4=None, part5=None,
+        detected_at="2026-01-01T00:00:00+00:00",
+    )
+
+    label = _format_record_option_label(record)
+
+    assert label == "あ / い / う"
+
+
+def test_format_record_option_label_truncates_when_too_long():
+    """100文字を超える場合、末尾を切り詰め省略記号を付与することを確認する。"""
+    record = RecordSummary(
+        id=1, part1="あ" * 60, part2="い" * 60, part3="う", part4=None, part5=None,
+        detected_at="2026-01-01T00:00:00+00:00",
+    )
+
+    label = _format_record_option_label(record)
+
+    assert len(label) == 100
+    assert label.endswith("…")
+
+
+def test_format_record_preview_includes_all_parts():
+    """5パート(短歌)すべてがプレビュー本文に含まれることを確認する。"""
+    record = RecordSummary(
+        id=1, part1="あ", part2="い", part3="う", part4="え", part5="お",
+        detected_at="2026-01-01T00:00:00+00:00",
+    )
+
+    preview = _format_record_preview(record)
+
+    assert "あ" in preview
+    assert "い" in preview
+    assert "う" in preview
+    assert "え" in preview
+    assert "お" in preview
+
+
+@pytest.mark.asyncio
+async def test_delete_base_view_interaction_check_rejects_other_user():
+    """コマンド実行者以外の操作を拒否することを確認する。"""
+    view = _DeleteBaseView(user_id=42)
+    interaction = FakeInteraction(user_id=999)
+
+    allowed = await view.interaction_check(interaction)
+
+    assert allowed is False
+    assert len(interaction.response.send_message_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_base_view_interaction_check_allows_same_user():
+    """コマンド実行者本人の操作を許可することを確認する。"""
+    view = _DeleteBaseView(user_id=42)
+    interaction = FakeInteraction(user_id=42)
+
+    allowed = await view.interaction_check(interaction)
+
+    assert allowed is True
+    assert len(interaction.response.send_message_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_base_view_on_timeout_disables_items_and_edits_message():
+    """タイムアウト時に全コンポーネントを無効化し、メッセージを更新することを確認する。"""
+    view = _DeleteBaseView(user_id=42)
+    button = discord.ui.Button(label="テスト", disabled=False)
+    view.add_item(button)
+    message = FakeInteractionMessage()
+    view.message = message
+
+    await view.on_timeout()
+
+    assert button.disabled is True
+    assert len(message.edit_calls) == 1
+    assert "タイムアウト" in message.edit_calls[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_delete_record_view_builds_select_options_from_records(record_store):
+    """渡された records から Select Menu の選択肢が構築されることを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    records, total_count = await handle_delete_list(
+        record_store, channel_id=111, user_id=42, keyword=None, offset=0,
+    )
+
+    view = DeleteRecordView(
+        record_store=record_store, channel_id=111, user_id=42, keyword=None,
+        offset=0, records=records, total_count=total_count,
+    )
+
+    assert len(view._select.options) == 1
+    assert view._select.options[0].label == "あ / い / う"
+    assert view._select.options[0].value == str(records[0].id)
+
+
+@pytest.mark.asyncio
+async def test_delete_record_view_disables_prev_button_on_first_page(record_store):
+    """先頭ページでは「前へ」ボタンが無効化されていることを確認する。"""
+    view = DeleteRecordView(
+        record_store=record_store, channel_id=111, user_id=42, keyword=None,
+        offset=0, records=[], total_count=0,
+    )
+
+    buttons = [item for item in view.children if isinstance(item, discord.ui.Button)]
+    prev_button = next(b for b in buttons if b.label == "◀ 前へ")
+
+    assert prev_button.disabled is True
+
+
+@pytest.mark.asyncio
+async def test_delete_record_view_disables_next_button_on_last_page(record_store):
+    """最終ページでは「次へ」ボタンが無効化されていることを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    records, total_count = await handle_delete_list(
+        record_store, channel_id=111, user_id=42, keyword=None, offset=0,
+    )
+
+    view = DeleteRecordView(
+        record_store=record_store, channel_id=111, user_id=42, keyword=None,
+        offset=0, records=records, total_count=total_count,
+    )
+
+    buttons = [item for item in view.children if isinstance(item, discord.ui.Button)]
+    next_button = next(b for b in buttons if b.label == "次へ ▶")
+
+    assert next_button.disabled is True
+
+
+@pytest.mark.asyncio
+async def test_delete_record_view_select_reports_stale_record(record_store):
+    """一覧取得後に消えた record_id が選択された場合、古い一覧である旨のメッセージを返すことを確認する。"""
+    view = DeleteRecordView(
+        record_store=record_store, channel_id=111, user_id=42, keyword=None,
+        offset=0, records=[], total_count=0,
+    )
+    interaction = FakeInteraction(user_id=42)
+    view._select._values = ["99999"]
+
+    await view._on_select(interaction)
+
+    assert len(interaction.response.edit_message_calls) == 1
+    call = interaction.response.edit_message_calls[0]
+    assert "既に削除されている" in call["content"]
+    assert call["view"] is None
+
+
+@pytest.mark.asyncio
+async def test_delete_record_view_next_button_advances_page(record_store):
+    """「次へ」ボタン押下で offset が _PAGE_SIZE だけ進んだ一覧に差し替わることを確認する。"""
+    for i in range(30):
+        record_store.add_record(
+            guild_id=1, channel_id=111, user_id=42, message_id=i,
+            parts=(f"part{i}", "い", "う"), morphemes=[], app_version="1.0.0",
+        )
+    records, total_count = await handle_delete_list(
+        record_store, channel_id=111, user_id=42, keyword=None, offset=0,
+    )
+    view = DeleteRecordView(
+        record_store=record_store, channel_id=111, user_id=42, keyword=None,
+        offset=0, records=records, total_count=total_count,
+    )
+    interaction = FakeInteraction(user_id=42)
+
+    await view._on_next(interaction)
+
+    assert len(interaction.response.edit_message_calls) == 1
+    new_view = interaction.response.edit_message_calls[0]["view"]
+    assert isinstance(new_view, DeleteRecordView)
+    assert new_view._offset == 25
+
+
+@pytest.mark.asyncio
+async def test_delete_record_view_select_shows_confirm_preview(record_store):
+    """Select Menu で1件選択すると、DeleteConfirmView への差し替えが行われることを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    records, total_count = await handle_delete_list(
+        record_store, channel_id=111, user_id=42, keyword=None, offset=0,
+    )
+    view = DeleteRecordView(
+        record_store=record_store, channel_id=111, user_id=42, keyword=None,
+        offset=0, records=records, total_count=total_count,
+    )
+    interaction = FakeInteraction(user_id=42)
+    view._select._values = [str(records[0].id)]
+
+    await view._on_select(interaction)
+
+    assert len(interaction.response.edit_message_calls) == 1
+    call = interaction.response.edit_message_calls[0]
+    assert isinstance(call["view"], DeleteConfirmView)
+    assert "あ" in call["content"]
+
+
+@pytest.mark.asyncio
+async def test_delete_confirm_view_confirm_deletes_and_reports_success(record_store):
+    """「削除する」押下時、記録を削除し成功メッセージへ差し替えることを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    record = record_store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)[0]
+    view = DeleteConfirmView(
+        record_store=record_store, record=record, user_id=42, channel_id=111,
+        keyword=None, offset=0,
+    )
+    interaction = FakeInteraction(user_id=42)
+
+    await view._on_confirm(interaction)
+
+    assert len(interaction.response.edit_message_calls) == 1
+    call = interaction.response.edit_message_calls[0]
+    assert call["content"] == "削除しました。"
+    assert call["view"] is None
+    assert record_store.count_records_by_user(channel_id=111, user_id=42) == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_confirm_view_confirm_reports_failure_when_already_deleted(record_store):
+    """既に削除済みの記録に対して「削除する」を押した場合、失敗メッセージへ差し替えることを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    record = record_store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)[0]
+    record_store.delete_record(record_id=record.id, user_id=42)
+    view = DeleteConfirmView(
+        record_store=record_store, record=record, user_id=42, channel_id=111,
+        keyword=None, offset=0,
+    )
+    interaction = FakeInteraction(user_id=42)
+
+    await view._on_confirm(interaction)
+
+    call = interaction.response.edit_message_calls[0]
+    assert "既に削除されているか" in call["content"]
+
+
+@pytest.mark.asyncio
+async def test_delete_confirm_view_cancel_returns_to_list(record_store):
+    """「キャンセル」押下時、一覧画面(DeleteRecordView)に戻すことを確認する。"""
+    record_store.add_record(
+        guild_id=1, channel_id=111, user_id=42, message_id=1,
+        parts=("あ", "い", "う"), morphemes=[], app_version="1.0.0",
+    )
+    record = record_store.list_records_by_user(channel_id=111, user_id=42, limit=25, offset=0)[0]
+    view = DeleteConfirmView(
+        record_store=record_store, record=record, user_id=42, channel_id=111,
+        keyword=None, offset=0,
+    )
+    interaction = FakeInteraction(user_id=42)
+
+    await view._on_cancel(interaction)
+
+    assert len(interaction.response.edit_message_calls) == 1
+    call = interaction.response.edit_message_calls[0]
+    assert isinstance(call["view"], DeleteRecordView)
+    assert record_store.count_records_by_user(channel_id=111, user_id=42) == 1
