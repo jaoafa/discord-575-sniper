@@ -743,3 +743,93 @@ def test_register_praise_is_independent_per_source(tmp_path):
     store.register_praise(source="record", source_id=1, user_id=100)
     count = store.register_praise(source="chain_record", source_id=1, user_id=100)
     assert count == 1
+
+
+def _add(store, **kwargs):
+    return store.add_record(
+        guild_id=1, channel_id=2, user_id=3, message_id=4,
+        parts=("a", "b", "c"), morphemes=[], app_version="1.0.0", **kwargs,
+    )
+
+
+def test_add_record_stores_evaluation_columns(tmp_path):
+    """overall_match・score・reply_message_id が保存され、省略時は NULL になることを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    full_id = _add(store, overall_match=0.5, score=0.75, reply_message_id=999)
+    bare_id = _add(store)
+
+    conn = sqlite3.connect(db_path)
+    full = conn.execute(
+        "SELECT overall_match, score, reply_message_id FROM records WHERE id = ?", (full_id,)
+    ).fetchone()
+    bare = conn.execute(
+        "SELECT overall_match, score, reply_message_id FROM records WHERE id = ?", (bare_id,)
+    ).fetchone()
+    conn.close()
+    assert full == (0.5, 0.75, 999)
+    assert bare == (None, None, None)
+
+
+def test_migrates_old_schema_keeping_existing_rows(tmp_path):
+    """新規列・テーブルが無い旧スキーマの DB を開くと、既存行を保持したまま列が NULL で追加されることを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, detected_at TEXT NOT NULL,
+            guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL, part1 TEXT NOT NULL, part2 TEXT NOT NULL,
+            part3 TEXT NOT NULL, part4 TEXT, part5 TEXT, morphemes_json TEXT NOT NULL,
+            app_version TEXT)"""
+    )
+    conn.execute(
+        """CREATE TABLE chain_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, detected_at TEXT NOT NULL,
+            guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, kind TEXT NOT NULL,
+            pattern TEXT NOT NULL, parts_json TEXT NOT NULL, app_version TEXT)"""
+    )
+    conn.execute(
+        "INSERT INTO records (detected_at, guild_id, channel_id, user_id, message_id, "
+        "part1, part2, part3, morphemes_json) VALUES ('t', 1, 2, 3, 4, 'a', 'b', 'c', '[]')"
+    )
+    conn.commit()
+    conn.close()
+
+    RecordStore(db_path)
+    RecordStore(db_path)  # 2回目も冪等
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT part1, overall_match, score, reply_message_id FROM records"
+    ).fetchone()
+    chain_columns = {r[1] for r in conn.execute("PRAGMA table_info(chain_records)")}
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    conn.close()
+    assert row == ("a", None, None, None)
+    assert "reply_message_id" in chain_columns
+    assert "disapprovals" in tables
+
+
+def test_find_source_by_reply_message_id_searches_both_tables(tmp_path):
+    """返信メッセージ ID から records・chain_records の両方を引けることを確認する。"""
+    store = RecordStore(str(tmp_path / "records.db"))
+    record_id = _add(store, reply_message_id=111)
+    entry = ChainEntry(text="x", user_id=1, message_id=2, mora=5, timestamp=0.0)
+    chain_id = store.add_chain_record(
+        guild_id=1, channel_id=2, kind="独吟", pattern=(5, 7, 5),
+        parts=[entry, entry, entry], app_version="1.0.0", reply_message_id=222,
+    )
+    assert store.find_source_by_reply_message_id(111) == ("record", record_id)
+    assert store.find_source_by_reply_message_id(222) == ("chain_record", chain_id)
+    assert store.find_source_by_reply_message_id(333) is None
+
+
+def test_register_and_remove_disapproval(tmp_path):
+    """否定評価は同一ユーザーの重複を作らず、取消は存在する場合のみ True になることを確認する。"""
+    store = RecordStore(str(tmp_path / "records.db"))
+    assert store.register_disapproval(source="record", source_id=1, user_id=10) is True
+    assert store.register_disapproval(source="record", source_id=1, user_id=10) is False
+    assert store.register_disapproval(source="record", source_id=1, user_id=11) is True
+    assert store.remove_disapproval(source="record", source_id=1, user_id=10) is True
+    assert store.remove_disapproval(source="record", source_id=1, user_id=10) is False

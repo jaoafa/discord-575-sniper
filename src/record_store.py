@@ -100,6 +100,7 @@ class RecordStore:
         )
         self._migrate_add_tanka_columns()
         self._migrate_add_app_version_column()
+        self._migrate_add_evaluation_columns()
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS praises (
@@ -113,6 +114,16 @@ class RecordStore:
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS praise_users (
+                source TEXT NOT NULL,
+                source_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                PRIMARY KEY (source, source_id, user_id)
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS disapprovals (
                 source TEXT NOT NULL,
                 source_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -151,6 +162,28 @@ class RecordStore:
         if "app_version" not in chain_records_columns:
             self._conn.execute("ALTER TABLE chain_records ADD COLUMN app_version TEXT")
 
+    def _migrate_add_evaluation_columns(self) -> None:
+        """検出品質の評価用の列(全体一致度・スコア・Bot の返信メッセージ ID)を既存 DB に追加する。
+
+        CREATE TABLE IF NOT EXISTS は既存テーブルに新規列を追加しないため、
+        旧スキーマの DB ファイルに対してはこのマイグレーションが必要。
+        マイグレーション前に挿入された既存レコードの新規列は NULL のままとなる
+        (原文を保存していないため遡及計算はできない)。
+        """
+        records_columns = {row[1] for row in self._conn.execute("PRAGMA table_info(records)")}
+        for column, column_type in (
+            ("overall_match", "REAL"),
+            ("score", "REAL"),
+            ("reply_message_id", "INTEGER"),
+        ):
+            if column not in records_columns:
+                self._conn.execute(f"ALTER TABLE records ADD COLUMN {column} {column_type}")
+        chain_records_columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(chain_records)")
+        }
+        if "reply_message_id" not in chain_records_columns:
+            self._conn.execute("ALTER TABLE chain_records ADD COLUMN reply_message_id INTEGER")
+
     def add_record(
         self,
         *,
@@ -161,6 +194,9 @@ class RecordStore:
         parts: tuple[str, ...],
         morphemes: list[Morpheme],
         app_version: str,
+        overall_match: float | None = None,
+        score: float | None = None,
+        reply_message_id: int | None = None,
     ) -> int:
         """検出した川柳・短歌を1件記録する。
 
@@ -174,6 +210,11 @@ class RecordStore:
             morphemes: 採用された部分に対応する形態素のリスト(フィルタ前)。
                 mora=0 の形態素も含むため、surface を単純結合しても parts とは一致しない。
             app_version: 検出時に稼働していた discord-575-sniper のバージョン。
+            overall_match: 候補がメッセージ全体の何割を占めるか(Candidate.coverage)。
+            score: 候補の質のスコア(Candidate.score)。抑制レベル別の品質比較に使う。
+            reply_message_id: Bot が送った検出返信メッセージの ID(返信失敗時は None)。
+                リアクションによる評価の引き当てに使う。PraiseTracker の
+                reply_message_id(返信先の元メッセージの ID)とは別物。
 
         Returns:
             挿入した行の id(records.id)。PraiseTracker が「直前の詠み」を
@@ -199,8 +240,9 @@ class RecordStore:
                 """
                 INSERT INTO records (
                     detected_at, guild_id, channel_id, user_id, message_id,
-                    part1, part2, part3, part4, part5, morphemes_json, app_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    part1, part2, part3, part4, part5, morphemes_json, app_version,
+                    overall_match, score, reply_message_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     detected_at,
@@ -215,6 +257,9 @@ class RecordStore:
                     part5,
                     morphemes_json,
                     app_version,
+                    overall_match,
+                    score,
+                    reply_message_id,
                 ),
             )
             self._conn.commit()
@@ -229,6 +274,7 @@ class RecordStore:
         pattern: tuple[int, ...],
         parts: list[ChainEntry],
         app_version: str,
+        reply_message_id: int | None = None,
     ) -> int:
         """複数メッセージ結合により検出した川柳(独吟・連歌)を1件記録する。
 
@@ -240,6 +286,7 @@ class RecordStore:
                 将来の拡張に備え固定値ではなく引数として受け取る)。
             parts: 一致した各パート(ChainEntry のリスト、3件)。
             app_version: 検出時に稼働していた discord-575-sniper のバージョン。
+            reply_message_id: Bot が送った検出返信メッセージの ID(返信失敗時は None)。
 
         Returns:
             挿入した行の id(chain_records.id)。PraiseTracker が「直前の詠み」を
@@ -263,10 +310,14 @@ class RecordStore:
             cursor = self._conn.execute(
                 """
                 INSERT INTO chain_records (
-                    detected_at, guild_id, channel_id, kind, pattern, parts_json, app_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    detected_at, guild_id, channel_id, kind, pattern, parts_json, app_version,
+                    reply_message_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (detected_at, guild_id, channel_id, kind, pattern_str, parts_json, app_version),
+                (
+                    detected_at, guild_id, channel_id, kind, pattern_str, parts_json,
+                    app_version, reply_message_id,
+                ),
             )
             self._conn.commit()
             return cursor.lastrowid
@@ -308,6 +359,58 @@ class RecordStore:
             ).fetchone()
             self._conn.commit()
             return row[0]
+
+    def find_source_by_reply_message_id(self, message_id: int) -> tuple[str, int] | None:
+        """Bot の検出返信メッセージ ID から、対応する詠みの (source, source_id) を引く。
+
+        Args:
+            message_id: Bot が送った検出返信メッセージの ID。
+
+        Returns:
+            records に一致すれば ("record", id)、chain_records に一致すれば
+            ("chain_record", id)。どちらにも無ければ None。
+        """
+        with self._lock:
+            for source, table in (("record", "records"), ("chain_record", "chain_records")):
+                row = self._conn.execute(
+                    f"SELECT id FROM {table} WHERE reply_message_id = ?", (message_id,)
+                ).fetchone()
+                if row is not None:
+                    return (source, row[0])
+        return None
+
+    def register_disapproval(self, *, source: str, source_id: int, user_id: int) -> bool:
+        """指定した詠みへの否定評価(誤検出の指摘)を1件記録する。
+
+        Args:
+            source: 詠みの由来。"record" または "chain_record"。
+            source_id: source に対応するテーブルの id。
+            user_id: 否定評価をしたユーザーの ID。
+
+        Returns:
+            新規に記録できた場合 True。同じユーザーが既に評価済みの場合は False。
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "INSERT OR IGNORE INTO disapprovals (source, source_id, user_id) VALUES (?, ?, ?)",
+                (source, source_id, user_id),
+            )
+            self._conn.commit()
+        return cursor.rowcount > 0
+
+    def remove_disapproval(self, *, source: str, source_id: int, user_id: int) -> bool:
+        """指定した詠みへの否定評価を取り消す(リアクションの取消に対応する)。
+
+        Returns:
+            記録を削除できた場合 True。該当する記録が無かった場合 False。
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM disapprovals WHERE source = ? AND source_id = ? AND user_id = ?",
+                (source, source_id, user_id),
+            )
+            self._conn.commit()
+        return cursor.rowcount > 0
 
     _PICKABLE_COLUMNS = frozenset({"part1", "part2", "part3", "part4", "part5"})
 

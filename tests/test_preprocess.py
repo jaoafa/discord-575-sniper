@@ -37,8 +37,10 @@ def test_removes_inline_code():
 
 
 def test_normalizes_whitespace():
-    """改行や連続する空白が単一の半角スペースに正規化されることを確認する。"""
-    assert sanitize_text("古池や\n\n蛙飛び込む   水の音") == "古池や 蛙飛び込む 水の音"
+    """改行を含む空白の連続は \\n 1つ、それ以外の連続する空白は半角スペース1つに正規化されることを確認する。"""
+    assert sanitize_text("古池や\n\n蛙飛び込む   水の音") == "古池や\n蛙飛び込む 水の音"
+    assert sanitize_text("古池や\r\n 蛙飛び込む") == "古池や\n蛙飛び込む"
+    assert sanitize_text("古池や \t 蛙飛び込む") == "古池や 蛙飛び込む"
 
 
 def test_empty_after_sanitize():
