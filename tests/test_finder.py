@@ -1,9 +1,15 @@
 from src.senryu.finder import (
+    BASE_SCORE,
+    BREAK_IN_PART_PENALTY,
+    COVERAGE_WEIGHT,
+    EDGE_BONUS,
+    MIN_SCORE,
     SENRYU_PATTERN,
     TANKA_PATTERN,
     Candidate,
     find_candidates,
     pick_best,
+    score_candidate,
 )
 from src.senryu.tokenizer import Morpheme
 
@@ -204,3 +210,100 @@ def test_find_candidates_strips_zero_mora_symbol_from_middle_of_part():
     assert len(candidates) == 1
     assert candidates[0].parts == ("あいうえお", "かきくけこさし", "たちつてと")
     assert candidates[0].text == "あいうえおかきくけこさしたちつてと"
+
+
+def _r(surface, mora, reading="", pos="名詞"):
+    return Morpheme(surface=surface, reading=reading, mora=mora, start=0, end=len(surface), pos=pos)
+
+
+def _brk(surface="、"):
+    return _r(surface, 0, reading=surface, pos="補助記号")
+
+
+def test_sokuon_only_part_is_excluded():
+    """「っ」だけで音数を満たす句を含む候補は採用されないことを確認する。"""
+    morphemes = [
+        _r("っっっっっ", 5, reading="ッッッッッ", pos="記号"),
+        _r("かきくけこさし", 7),
+        _r("たちつてと", 5),
+    ]
+    assert find_candidates(morphemes, "") == []
+
+
+def test_word_internal_sokuon_is_kept():
+    """「きっぷ」のように語中に促音を含む句は従来どおり候補になることを確認する。"""
+    morphemes = [
+        _r("きっぷ", 3, reading="キップ"),
+        _r("あい", 2),
+        _r("かきくけこさし", 7),
+        _r("たちつてと", 5),
+    ]
+    candidates = find_candidates(morphemes, "")
+    assert len(candidates) == 1
+    assert candidates[0].parts[0] == "きっぷあい"
+
+
+def test_clean_candidate_scores_higher_than_inner_break_candidate():
+    """句内に区切りが無い候補のスコアが、句内に区切りを含む候補より高いことを確認する。"""
+    clean = [_r("あいうえお", 5), _r("かきくけこさし", 7), _r("たちつてと", 5)]
+    broken = [_r("あい", 2), _brk(), _r("うえお", 3), _r("かきくけこさし", 7), _r("たちつてと", 5)]
+    clean_score, _ = score_candidate(clean, [(0, 1), (1, 2), (2, 3)])
+    broken_score, _ = score_candidate(broken, [(0, 3), (3, 4), (4, 5)])
+    assert clean_score == BASE_SCORE + COVERAGE_WEIGHT + 2 * EDGE_BONUS
+    assert broken_score == clean_score - BREAK_IN_PART_PENALTY
+
+
+def test_single_inner_break_candidate_is_still_detected():
+    """句内に区切りがちょうど1つだけの有効な候補は、他に候補が無ければ採用されることを確認する。"""
+    morphemes = [_r("あい", 2), _brk(), _r("うえお", 3), _r("かきくけこさし", 7), _r("たちつてと", 5)]
+    best = pick_best(find_candidates(morphemes, ""))
+    assert best is not None
+    assert best.parts == ("あいうえお", "かきくけこさし", "たちつてと")
+
+
+def test_two_inner_breaks_weak_candidate_is_rejected():
+    """句内区切りが2つ以上で、全体一致度が低く両端も整列していない候補は棄却されることを確認する。"""
+    core = [
+        _r("あ", 1), _brk(), _r("い", 1), _brk(), _r("うえお", 3),
+        _r("かきくけこさし", 7), _r("たちつてと", 5),
+    ]
+    weak = [_r("あ" * 10, 10)] + core + [_r("い" * 10, 10)]
+    assert pick_best(find_candidates(weak, "")) is None
+    # 同じ候補でも、メッセージ全体と一致していれば採用される。
+    assert pick_best(find_candidates(core, "")) is not None
+
+
+def test_newline_counts_as_break():
+    """改行(空白形態素の \\n)も句内の区切りとして数えられることを確認する。"""
+    newline = _r("\n", 0, reading="\n", pos="空白")
+    morphemes = [_r("あい", 2), newline, _r("うえお", 3), _r("かきくけこさし", 7), _r("たちつてと", 5)]
+    score, _ = score_candidate(morphemes, [(0, 3), (3, 4), (4, 5)])
+    assert score == BASE_SCORE + COVERAGE_WEIGHT + 2 * EDGE_BONUS - BREAK_IN_PART_PENALTY
+
+
+def test_break_at_end_of_part_is_not_penalized():
+    """パート末尾側に付く区切り(自然な句切れ)は減点されないことを確認する。"""
+    morphemes = [_r("あいうえお", 5), _brk(), _r("かきくけこさし", 7), _r("たちつてと", 5)]
+    score, _ = score_candidate(morphemes, [(0, 2), (2, 3), (3, 4)])
+    assert score == BASE_SCORE + COVERAGE_WEIGHT + 2 * EDGE_BONUS
+
+
+def test_particle_ending_is_not_penalized():
+    """助詞で終わる候補が、他の条件が同じ名詞終わりの候補と同じスコアになることを確認する。"""
+    noun_end = [_r("あいうえお", 5), _r("かきくけこさし", 7), _r("たちつてと", 5)]
+    particle_end = [_r("あいうえお", 5), _r("かきくけこさし", 7), _r("たちつてと", 5, pos="助詞")]
+    ranges = [(0, 1), (1, 2), (2, 3)]
+    assert score_candidate(noun_end, ranges) == score_candidate(particle_end, ranges)
+
+
+def test_pick_best_prefers_higher_score_over_longer_text():
+    """文字列長より score を優先して選ぶことを確認する。"""
+    low = Candidate(0, 3, "あいうえおかきくけこさしたちつてと", ("a", "b", "c"), SENRYU_PATTERN, score=0.4)
+    high = Candidate(5, 8, "短い", ("a", "b", "c"), SENRYU_PATTERN, score=0.9)
+    assert pick_best([low, high]) is high
+
+
+def test_pick_best_rejects_candidates_below_min_score():
+    """MIN_SCORE 未満の候補しか無ければ None を返すことを確認する。"""
+    c = Candidate(0, 3, "あ", ("a", "b", "c"), SENRYU_PATTERN, score=MIN_SCORE - 0.01)
+    assert pick_best([c]) is None

@@ -316,3 +316,49 @@ def test_channels_are_isolated():
         morphemes=_morphemes("水の音", 5), now=3.0,
     )
     assert result is not None
+
+
+def test_sokuon_only_message_resets_chain():
+    """「っ」だけのメッセージ(5モーラ)はチェーンに加わらず、保持中のチェーンをリセットすることを確認する。"""
+    tracker = ChainTracker()
+    tracker.process_message(
+        channel_id=1, user_id=100, message_id=1, text="古池や",
+        morphemes=_morphemes("古池や", 5), now=0.0,
+    )
+    sokuon = [Morpheme(surface="っっっっっ", reading="ッッッッッ", mora=5, start=0, end=5, pos="記号")]
+    assert tracker.process_message(
+        channel_id=1, user_id=100, message_id=2, text="っっっっっ", morphemes=sokuon, now=1.0,
+    ) is None
+    tracker.process_message(
+        channel_id=1, user_id=100, message_id=3, text="蛙飛び込む",
+        morphemes=_morphemes("蛙飛び込む", 7), now=2.0,
+    )
+    result = tracker.process_message(
+        channel_id=1, user_id=100, message_id=4, text="水の音",
+        morphemes=_morphemes("水の音", 5), now=3.0,
+    )
+    assert result is None
+
+
+def test_message_with_too_many_inner_breaks_resets_chain():
+    """句内に区切りが4つ以上混ざったメッセージはチェーンに加わらないことを確認する。"""
+    tracker = ChainTracker()
+    comma = Morpheme(surface="、", reading="、", mora=0, start=0, end=1, pos="補助記号")
+    noisy = [
+        Morpheme(surface="あ", reading="ア", mora=1, start=0, end=1, pos="名詞"),
+    ]
+    for _ in range(4):
+        noisy += [comma, Morpheme(surface="い", reading="イ", mora=1, start=0, end=1, pos="名詞")]
+    assert sum(m.mora for m in noisy) == 5
+    assert tracker.process_message(
+        channel_id=1, user_id=100, message_id=1, text="あ、い、い、い、い", morphemes=noisy, now=0.0,
+    ) is None
+    # チェーンに加わっていないので、続く 7・5 では川柳が成立しない。
+    tracker.process_message(
+        channel_id=1, user_id=100, message_id=2, text="蛙飛び込む",
+        morphemes=_morphemes("蛙飛び込む", 7), now=1.0,
+    )
+    assert tracker.process_message(
+        channel_id=1, user_id=100, message_id=3, text="水の音",
+        morphemes=_morphemes("水の音", 5), now=2.0,
+    ) is None

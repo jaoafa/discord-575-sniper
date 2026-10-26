@@ -23,6 +23,9 @@ _REPLY_HEADERS: dict[int, str] = {
     5: "🎋 短歌を検出しました！",
 }
 
+# 誤検出の指摘(否定評価)として扱うリアクション絵文字。Bot の検出返信に付けられたものが対象。
+_DISAPPROVAL_EMOJI = "👎"
+
 # あっぱれ判定に使う正規表現。メッセージ本文(右トリム後)が「あっぱれ」で
 # 終わっていればマッチする(前方に任意の文字列があってもよい)。
 _APPARE_PATTERN = re.compile(r"あっぱれ$")
@@ -462,6 +465,16 @@ class DeleteConfirmView(_DeleteBaseView):
         list_view.message = interaction.message
 
 
+async def _reply_and_get_id(message: discord.Message, text: str) -> int | None:
+    """メッセージに返信し、送信できた返信メッセージの ID を返す。失敗時は None。"""
+    try:
+        reply = await message.reply(text)
+    except Exception:
+        logger.exception("メッセージへの返信に失敗しました。")
+        return None
+    return getattr(reply, "id", None)
+
+
 def _is_self_bot_message(message: discord.Message, client: discord.Client) -> bool:
     """メッセージの投稿者が自 Bot(575 sniper)自身かどうかを判定する。
 
@@ -602,11 +615,13 @@ def create_bot(
                 logger.exception("川柳検出処理中に例外が発生したため、このメッセージの処理をスキップします。")
                 return
             if detection is not None:
+                # 返信を先に送り、その ID を記録に残す(リアクションによる評価の引き当てに使う)。
+                # 記録と返信は互いの成否に依存させない(返信に失敗しても記録は行い、
+                # 記録側の障害でユーザーへの返信まで失われないようにするため)。
+                reply_message_id = await _reply_and_get_id(message, detection.reply_text)
                 record_id: int | None = None
                 try:
                     # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
-                    # 記録と返信は互いの成否に依存させない(検出した事実自体を残しつつ、
-                    # 記録側の障害でユーザーへの返信まで失われないようにするため)。
                     record_id = await asyncio.to_thread(
                         record_store.add_record,
                         guild_id=message.guild.id,
@@ -616,6 +631,9 @@ def create_bot(
                         parts=detection.candidate.parts,
                         morphemes=detection.morphemes,
                         app_version=__version__,
+                        overall_match=detection.candidate.coverage,
+                        score=detection.candidate.score,
+                        reply_message_id=reply_message_id,
                     )
                 except Exception:
                     logger.exception("川柳の記録に失敗しました。")
@@ -628,10 +646,6 @@ def create_bot(
                         author_user_ids=frozenset({message.author.id}),
                         now=time.monotonic(),
                     )
-                try:
-                    await message.reply(detection.reply_text)
-                except Exception:
-                    logger.exception("メッセージへの返信に失敗しました。")
 
             try:
                 chain_match = chain_tracker.process_message(
@@ -646,6 +660,9 @@ def create_bot(
                 logger.exception("連歌チェーンの処理中に例外が発生しました。")
                 chain_match = None
             if chain_match is not None:
+                reply_message_id = await _reply_and_get_id(
+                    message, _build_chain_reply_text(chain_match)
+                )
                 chain_id: int | None = None
                 try:
                     # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
@@ -657,6 +674,7 @@ def create_bot(
                         pattern=chain_match.pattern,
                         parts=chain_match.parts,
                         app_version=__version__,
+                        reply_message_id=reply_message_id,
                     )
                 except Exception:
                     logger.exception("連歌の記録に失敗しました。")
@@ -669,10 +687,45 @@ def create_bot(
                         author_user_ids=frozenset(p.user_id for p in chain_match.parts),
                         now=time.monotonic(),
                     )
-                try:
-                    await message.reply(_build_chain_reply_text(chain_match))
-                except Exception:
-                    logger.exception("連歌メッセージへの返信に失敗しました。")
+
+    async def _handle_disapproval_reaction(
+        payload: discord.RawReactionActionEvent, *, added: bool
+    ) -> None:
+        """Bot の検出返信への 👎 リアクションの追加・取消を否定評価として記録・取消する。
+
+        対象ギルド外・👎 以外・Bot 自身のリアクション、および検出返信以外のメッセージへの
+        リアクションは何もしない。評価への応答メッセージは送らない。
+        """
+        if payload.guild_id != guild_id:
+            return
+        if str(payload.emoji) != _DISAPPROVAL_EMOJI:
+            return
+        if client.user is not None and payload.user_id == client.user.id:
+            return
+        try:
+            # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
+            target = await asyncio.to_thread(
+                record_store.find_source_by_reply_message_id, payload.message_id
+            )
+            if target is None:
+                return
+            source, source_id = target
+            update = record_store.register_disapproval if added else record_store.remove_disapproval
+            await asyncio.to_thread(
+                update, source=source, source_id=source_id, user_id=payload.user_id
+            )
+        except Exception:
+            logger.exception("否定評価リアクションの処理中に例外が発生しました。")
+
+    @client.event
+    async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+        """リアクション追加時、Bot の検出返信への 👎 を否定評価として記録する。"""
+        await _handle_disapproval_reaction(payload, added=True)
+
+    @client.event
+    async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+        """リアクション取消時、Bot の検出返信への 👎 の否定評価を取り消す。"""
+        await _handle_disapproval_reaction(payload, added=False)
 
     senryu_group = app_commands.Group(name="senryu", description="川柳検出 Bot のチャンネル設定")
 

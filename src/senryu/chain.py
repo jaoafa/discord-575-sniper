@@ -1,6 +1,13 @@
 from dataclasses import dataclass
 
-from .finder import SENRYU_PATTERN, can_start_part, has_unknown_mora_word
+from .finder import (
+    MIN_SCORE,
+    SENRYU_PATTERN,
+    can_start_part,
+    has_substantive_mora,
+    has_unknown_mora_word,
+    score_candidate,
+)
 from .mora import total_mora
 from .tokenizer import Morpheme
 
@@ -111,6 +118,15 @@ class ChainTracker:
         starts_valid_part = can_start_part(morphemes[0])
         has_unknown_word = has_unknown_mora_word(morphemes)
         if not is_valid_mora or not starts_valid_part or has_unknown_word:
+            self._store(channel_id, [])
+            return None
+        # 「っっっっっ」のように促音しか無い発話や、句内に句読点・改行が過剰に混ざった
+        # 質の低いメッセージはチェーンに加えない(単一メッセージ内検出と同じ基準)。
+        if not has_substantive_mora(morphemes):
+            self._store(channel_id, [])
+            return None
+        score, _ = score_candidate(morphemes, [(0, len(morphemes))])
+        if score < MIN_SCORE:
             self._store(channel_id, [])
             return None
 
