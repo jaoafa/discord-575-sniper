@@ -492,14 +492,26 @@ async def _handle_appare(
 ) -> None:
     """メッセージがあっぱれ判定条件に合致すれば、カウント加算と返信を行う。
 
-    対象外条件(直前の詠みが無い/期限切れ、送信者が投稿者本人、送信者が
-    あっぱれ済み)に該当する場合は何もしない。
+    返信形式のあっぱれは返信先の詠み(時間制限なし)、そうでなければ直前の詠み
+    (PRAISE_WINDOW_SECONDS 以内)が対象。次の場合は何もしない。
+    対象の詠みが無い/期限切れ、返信先が詠みでない、送信者が投稿者本人、
+    送信者があっぱれ済み。
     """
     if not _APPARE_PATTERN.search(message.content.rstrip()):
         return
-    target: LastSenryu | None = praise_tracker.get_target(
-        channel_id=channel.id, now=time.monotonic()
-    )
+    reference = message.reference
+    target: LastSenryu | None
+    if reference is not None and reference.message_id is not None:
+        try:
+            # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
+            target = await asyncio.to_thread(
+                record_store.find_senryu_by_message_id, reference.message_id, channel.id
+            )
+        except Exception:
+            logger.exception("あっぱれの返信先の取得に失敗しました。")
+            return
+    else:
+        target = praise_tracker.get_target(channel_id=channel.id, now=time.monotonic())
     if target is None:
         return
     if message.author.id in target.author_user_ids:
