@@ -13,10 +13,12 @@ from src.discord_client import (
     handle_delete_list,
     handle_disable,
     handle_enable,
+    handle_explain,
     handle_remix,
     handle_status,
 )
 from src.record_store import RecordStore, RecordSummary
+from src.senryu.explain import explain_text
 
 
 def test_build_reply_detects_575_famous_example():
@@ -522,3 +524,11 @@ async def test_delete_confirm_view_cancel_returns_to_list(record_store):
     call = interaction.response.edit_message_calls[0]
     assert isinstance(call["view"], DeleteRecordView)
     assert record_store.count_records_by_user(channel_id=111, user_id=42) == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_explain_returns_explanation_text():
+    """handle_explain が explain_text と同じ説明文を返すことを確認する。"""
+    text = "古池や蛙飛び込む水の音"
+
+    assert await handle_explain(text) == explain_text(text)

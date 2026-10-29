@@ -1,4 +1,6 @@
-from src.senryu.chain import ChainTracker
+import pytest
+
+from src.senryu.chain import ChainTracker, chain_ineligibility_reason
 from src.senryu.tokenizer import Morpheme
 
 
@@ -362,3 +364,59 @@ def test_message_with_too_many_inner_breaks_resets_chain():
         channel_id=1, user_id=100, message_id=3, text="水の音",
         morphemes=_morphemes("水の音", 5), now=2.0,
     ) is None
+
+
+def _noisy_morphemes() -> list[Morpheme]:
+    """句内に区切りが4つ混ざり、スコアが MIN_SCORE を下回る5モーラのメッセージを作るテスト用ヘルパー。"""
+    comma = Morpheme(surface="、", reading="、", mora=0, start=0, end=1, pos="補助記号")
+    noisy = [Morpheme(surface="あ", reading="ア", mora=1, start=0, end=1, pos="名詞")]
+    for _ in range(4):
+        noisy += [comma, Morpheme(surface="い", reading="イ", mora=1, start=0, end=1, pos="名詞")]
+    return noisy
+
+
+def _ineligible_cases() -> list[tuple[list[Morpheme], str]]:
+    """(形態素列, 不適格理由に含まれるべき文言) の組を返す。"""
+    return [
+        ([], "サニタイズ後のテキストが空です"),
+        (_morphemes("こんにちは", 6), "総モーラ数が 5 でも 7 でもありません(総モーラ数: 6)"),
+        (_morphemes("とても", 7, pos="助詞"), "先頭の形態素が付属語です(品詞: 助詞)"),
+        (
+            [
+                Morpheme(surface="Vlog", reading="", mora=0, start=0, end=4, pos="名詞"),
+                Morpheme(surface="かきくけこさし", reading="", mora=7, start=4, end=11, pos="名詞"),
+            ],
+            "記号・空白以外で読みが取れない語(未知語)を含みます",
+        ),
+        (
+            [Morpheme(surface="っっっっっ", reading="ッッッッッ", mora=5, start=0, end=5, pos="記号")],
+            "促音(ッ)だけで構成されています",
+        ),
+        (_noisy_morphemes(), "スコア不足です(score=0.20 < MIN_SCORE=0.30)"),
+    ]
+
+
+@pytest.mark.parametrize("morphemes", [_morphemes("古池や", 5), _morphemes("蛙飛び込む", 7)])
+def test_chain_ineligibility_reason_is_none_for_eligible_message(morphemes):
+    """5モーラ・7モーラの正常なメッセージは適格(None)であることを確認する。"""
+    assert chain_ineligibility_reason(morphemes) is None
+
+
+@pytest.mark.parametrize("morphemes, expected", _ineligible_cases())
+def test_chain_ineligibility_reason_returns_first_matching_reason(morphemes, expected):
+    """不適格なメッセージでは、判定順で最初に該当した理由が返ることを確認する。"""
+    assert chain_ineligibility_reason(morphemes) == expected
+
+
+@pytest.mark.parametrize(
+    "morphemes",
+    [_morphemes("古池や", 5), _morphemes("蛙飛び込む", 7)] + [m for m, _ in _ineligible_cases()],
+)
+def test_chain_ineligibility_reason_matches_process_message_behavior(morphemes):
+    """理由が None であることと、空のチェーンに単独で与えたメッセージが保持されることが一致する。"""
+    tracker = ChainTracker()
+    text = "".join(m.surface for m in morphemes)
+    tracker.process_message(
+        channel_id=1, user_id=100, message_id=1, text=text, morphemes=morphemes, now=0.0,
+    )
+    assert (1 in tracker._chains) == (chain_ineligibility_reason(morphemes) is None)

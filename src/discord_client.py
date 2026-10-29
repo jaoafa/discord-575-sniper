@@ -10,6 +10,7 @@ from discord import app_commands
 from .config_store import ConfigStore
 from .record_store import RecordStore, RecordSummary
 from .senryu.chain import ChainMatch, ChainTracker
+from .senryu.explain import explain_text
 from .senryu.finder import Candidate, find_candidates, pick_best
 from .senryu.praise import LastSenryu, PraiseTracker
 from .senryu.preprocess import sanitize_text
@@ -160,6 +161,12 @@ async def handle_remix(record_store: RecordStore, channel_id: int) -> str:
         picks.append(pick)
     lines = "\n".join(f"> {text} (<@{user_id}>)" for text, user_id in picks)
     return f"🎋 過去の記録から短歌を合成しました！\n{lines}"
+
+
+async def handle_explain(text: str) -> str:
+    """文章が川柳・短歌として検出されるか、されない理由の説明文を返す。"""
+    # 形態素解析と分割の列挙は CPU バウンドなので to_thread でイベントループの外へ逃がす。
+    return await asyncio.to_thread(explain_text, text)
 
 
 async def handle_delete_list(
@@ -815,6 +822,24 @@ def create_bot(
             )
             return
         await interaction.response.send_message(message)
+
+    @senryu_group.command(
+        name="explain", description="文章が川柳・短歌として検出されるか、されない理由を説明します"
+    )
+    @app_commands.describe(text="調べたい文章")
+    async def explain(interaction: discord.Interaction, text: app_commands.Range[str, 1, 200]):
+        """`/senryu explain` コマンドを処理し、検出可否と棄却理由の説明を公開で返信する。"""
+        try:
+            message = await handle_explain(text)
+        except Exception:
+            logger.exception("川柳検出の説明生成に失敗しました。")
+            await interaction.response.send_message(
+                "説明の生成に失敗しました。時間を置いて再度お試しください。", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            message, ephemeral=False, allowed_mentions=discord.AllowedMentions.none()
+        )
 
     @senryu_group.command(name="delete", description="このチャンネルで自分が投稿した記録を選んで削除します")
     @app_commands.describe(keyword="記録を絞り込むキーワード(部分一致・任意)")

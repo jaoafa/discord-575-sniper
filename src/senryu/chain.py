@@ -57,6 +57,37 @@ def _find_match(chain: list[ChainEntry]) -> ChainMatch | None:
     return None
 
 
+def chain_ineligibility_reason(morphemes: list[Morpheme]) -> str | None:
+    """メッセージ単体が連歌チェーンに加われない理由を返す。加われる場合は None。
+
+    複数の理由に該当する場合は、空 → 総モーラ数 → 先頭の付属語 → 未知語 → 促音のみ →
+    スコア不足の順で最初に該当したものを返す。ChainTracker.process_message の判定と
+    /senryu explain の説明の両方から使う。
+
+    Args:
+        morphemes: サニタイズ済みメッセージを形態素解析した結果。空リストも受け付ける。
+    """
+    # can_start_part() は morphemes[0] にアクセスするため、空リストはモーラ数チェックより
+    # 先に弾く(添付ファイルのみ等でサニタイズ後に空文字列になると morphemes が空になる)。
+    if not morphemes:
+        return "サニタイズ後のテキストが空です"
+    mora = total_mora(morphemes)
+    if mora not in (5, 7):
+        return f"総モーラ数が 5 でも 7 でもありません(総モーラ数: {mora})"
+    if not can_start_part(morphemes[0]):
+        return f"先頭の形態素が付属語です(品詞: {morphemes[0].pos})"
+    if has_unknown_mora_word(morphemes):
+        return "記号・空白以外で読みが取れない語(未知語)を含みます"
+    # 「っっっっっ」のように促音しか無い発話や、句内に句読点・改行が過剰に混ざった
+    # 質の低いメッセージはチェーンに加えない(単一メッセージ内検出と同じ基準)。
+    if not has_substantive_mora(morphemes):
+        return "促音(ッ)だけで構成されています"
+    score, _ = score_candidate(morphemes, [(0, len(morphemes))])
+    if score < MIN_SCORE:
+        return f"スコア不足です(score={score:.2f} < MIN_SCORE={MIN_SCORE:.2f})"
+    return None
+
+
 class ChainTracker:
     """チャンネルごとに直近の保持メッセージの列(チェーン)を管理するクラス。
 
@@ -106,32 +137,13 @@ class ChainTracker:
         if chain and (now - chain[-1].timestamp) > CHAIN_TIMEOUT_SECONDS:
             chain = []
 
-        # can_start_part() は morphemes[0] にアクセスするため、空リストの場合は
-        # モーラ数チェックより先に弾く(添付ファイルのみ等でサニタイズ後に
-        # 空文字列になったメッセージでは morphemes が空リストになり得る)。
-        if not morphemes:
+        if chain_ineligibility_reason(morphemes) is not None:
             self._store(channel_id, [])
             return None
 
-        mora = total_mora(morphemes)
-        is_valid_mora = mora in (5, 7)
-        starts_valid_part = can_start_part(morphemes[0])
-        has_unknown_word = has_unknown_mora_word(morphemes)
-        if not is_valid_mora or not starts_valid_part or has_unknown_word:
-            self._store(channel_id, [])
-            return None
-        # 「っっっっっ」のように促音しか無い発話や、句内に句読点・改行が過剰に混ざった
-        # 質の低いメッセージはチェーンに加えない(単一メッセージ内検出と同じ基準)。
-        if not has_substantive_mora(morphemes):
-            self._store(channel_id, [])
-            return None
-        score, _ = score_candidate(morphemes, [(0, len(morphemes))])
-        if score < MIN_SCORE:
-            self._store(channel_id, [])
-            return None
-
-        # has_unknown_mora_word() のチェックを通過済みのため、ここで残る
+        # chain_ineligibility_reason() が None のため、ここで残る
         # mora=0 形態素は記号・空白品詞のみであることが保証されている。
+        mora = total_mora(morphemes)
         filtered_text = "".join(m.surface for m in morphemes if m.mora > 0)
         chain = chain + [
             ChainEntry(
