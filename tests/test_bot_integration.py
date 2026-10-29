@@ -839,3 +839,51 @@ async def test_irrelevant_reactions_are_ignored(client, records_db_path):
     ):
         await client.on_raw_reaction_add(payload)
     assert _disapproval_rows(records_db_path) == []
+
+
+def _get_explain_command(client):
+    """コマンドツリーから /senryu explain を取り出すテスト用ヘルパー。"""
+    senryu_group = client.tree.get_command("senryu", guild=discord.Object(id=GUILD_ID))
+    return next(cmd for cmd in senryu_group.commands if cmd.name == "explain")
+
+
+@pytest.mark.asyncio
+async def test_senryu_explain_command_is_registered_with_text_range(client):
+    """/senryu explain が登録され、text が 1〜200 文字に制限されていることを確認する。"""
+    explain_command = _get_explain_command(client)
+
+    assert [p.name for p in explain_command.parameters] == ["text"]
+    assert explain_command.parameters[0].min_value == 1
+    assert explain_command.parameters[0].max_value == 200
+
+
+@pytest.mark.asyncio
+async def test_senryu_explain_command_replies_publicly_without_mentions(client):
+    """/senryu explain は説明をチャンネルに公開し、メンション通知を発火させないことを確認する。"""
+    interaction = FakeCommandInteraction(channel_id=CHANNEL_ID, user_id=5000)
+
+    await _get_explain_command(client).callback(interaction, text=SENRYU_TEXT)
+
+    assert len(interaction.response.send_message_calls) == 1
+    args, kwargs = interaction.response.send_message_calls[0]
+    assert "検出されます" in args[0]
+    assert kwargs["ephemeral"] is False
+    assert kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+
+
+@pytest.mark.asyncio
+async def test_senryu_explain_command_reports_error_when_explain_fails(client, monkeypatch):
+    """説明の生成が失敗した場合、フレンドリーなエラーメッセージを ephemeral で1回だけ返すことを確認する。"""
+
+    def raise_error(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("src.discord_client.explain_text", raise_error)
+    interaction = FakeCommandInteraction(channel_id=CHANNEL_ID, user_id=5000)
+
+    await _get_explain_command(client).callback(interaction, text=SENRYU_TEXT)
+
+    assert len(interaction.response.send_message_calls) == 1
+    args, kwargs = interaction.response.send_message_calls[0]
+    assert args[0] == "説明の生成に失敗しました。時間を置いて再度お試しください。"
+    assert kwargs["ephemeral"] is True
