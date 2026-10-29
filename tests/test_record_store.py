@@ -833,3 +833,90 @@ def test_register_and_remove_disapproval(tmp_path):
     assert store.register_disapproval(source="record", source_id=1, user_id=11) is True
     assert store.remove_disapproval(source="record", source_id=1, user_id=10) is True
     assert store.remove_disapproval(source="record", source_id=1, user_id=10) is False
+
+
+def _add_record(store, *, channel_id=2000, user_id=3000, message_id=4000, reply_message_id=None):
+    return store.add_record(
+        guild_id=1000, channel_id=channel_id, user_id=user_id, message_id=message_id,
+        parts=("古池や", "蛙飛び込む", "水の音"), morphemes=[], app_version="1.0.0",
+        reply_message_id=reply_message_id,
+    )
+
+
+def _add_chain_record(store, *, channel_id=2000, message_ids=(10, 11, 12), user_ids=(1, 2, 1),
+                      reply_message_id=None):
+    parts = [
+        ChainEntry(text=f"part{i}", user_id=u, message_id=m, mora=mora, timestamp=float(i))
+        for i, (u, m, mora) in enumerate(zip(user_ids, message_ids, (5, 7, 5)))
+    ]
+    return store.add_chain_record(
+        guild_id=1000, channel_id=channel_id, kind="連歌", pattern=(5, 7, 5), parts=parts,
+        app_version="1.0.0", reply_message_id=reply_message_id,
+    )
+
+
+@pytest.mark.parametrize("message_id", [4000, 4100])
+def test_find_senryu_by_message_id_matches_record_original_and_bot_reply(tmp_path, message_id):
+    """records の詠み元メッセージ ID・Bot の検出返信 ID のどちらでも詠みを引けることを確認する。"""
+    store = RecordStore(str(tmp_path / "records.db"))
+    record_id = _add_record(store, message_id=4000, reply_message_id=4100)
+
+    found = store.find_senryu_by_message_id(message_id, 2000)
+
+    assert found is not None
+    assert found.source == "record"
+    assert found.source_id == record_id
+    assert found.channel_id == 2000
+    assert found.reply_message_id == 4000
+    assert found.author_user_ids == frozenset({3000})
+
+
+@pytest.mark.parametrize("message_id", [10, 11, 12, 900])
+def test_find_senryu_by_message_id_matches_chain_part_and_bot_reply(tmp_path, message_id):
+    """chain_records の各パートの元メッセージ ID・Bot の検出返信 ID のどれでも詠みを引けることを確認する。"""
+    store = RecordStore(str(tmp_path / "records.db"))
+    chain_id = _add_chain_record(store, reply_message_id=900)
+
+    found = store.find_senryu_by_message_id(message_id, 2000)
+
+    assert found is not None
+    assert found.source == "chain_record"
+    assert found.source_id == chain_id
+    assert found.channel_id == 2000
+    assert found.reply_message_id == 12
+    assert found.author_user_ids == frozenset({1, 2})
+
+
+def test_find_senryu_by_message_id_prefers_records_over_chain_records(tmp_path):
+    """records と chain_records の両方に一致する場合は records を返すことを確認する。"""
+    store = RecordStore(str(tmp_path / "records.db"))
+    record_id = _add_record(store, message_id=10)
+    _add_chain_record(store, message_ids=(10, 11, 12))
+
+    found = store.find_senryu_by_message_id(10, 2000)
+
+    assert found is not None
+    assert (found.source, found.source_id) == ("record", record_id)
+
+
+def test_find_senryu_by_message_id_returns_newest_chain_record_among_matches(tmp_path):
+    """同一メッセージが複数の chain_records に含まれる場合は id が最大のものを返すことを確認する。"""
+    store = RecordStore(str(tmp_path / "records.db"))
+    _add_chain_record(store, message_ids=(10, 11, 12))
+    newest_id = _add_chain_record(store, message_ids=(12, 13, 14))
+
+    found = store.find_senryu_by_message_id(12, 2000)
+
+    assert found is not None
+    assert (found.source, found.source_id) == ("chain_record", newest_id)
+
+
+def test_find_senryu_by_message_id_returns_none_for_other_channel_or_unknown_id(tmp_path):
+    """別チャンネルの ID や該当なしの ID では None を返すことを確認する。"""
+    store = RecordStore(str(tmp_path / "records.db"))
+    _add_record(store, message_id=4000, reply_message_id=4100)
+    _add_chain_record(store, message_ids=(10, 11, 12), reply_message_id=900)
+
+    assert store.find_senryu_by_message_id(4000, 2999) is None
+    assert store.find_senryu_by_message_id(11, 2999) is None
+    assert store.find_senryu_by_message_id(777, 2000) is None

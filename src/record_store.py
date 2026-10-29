@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .senryu.chain import ChainEntry
+from .senryu.praise import LastSenryu
 from .senryu.tokenizer import Morpheme
 
 
@@ -378,6 +379,64 @@ class RecordStore:
                 if row is not None:
                     return (source, row[0])
         return None
+
+    def find_senryu_by_message_id(self, message_id: int, channel_id: int) -> LastSenryu | None:
+        """メッセージ ID から、そのメッセージが指す詠みを引く(返信形式のあっぱれの対象解決用)。
+
+        Bot の検出返信、または詠み元メッセージ(連歌・独吟は各パートの元メッセージ)の
+        ID が一致する詠みを、指定チャンネル内から探す。
+
+        Args:
+            message_id: 返信先メッセージの ID。
+            channel_id: あっぱれが送られたチャンネルの ID。他チャンネルの詠みは対象外。
+
+        Returns:
+            一致した詠み。records を chain_records より優先し、同一テーブル内では id が
+            最大のものを1件返す。一致しなければ None。detected_at は期限判定に使わない
+            経路のため 0.0 固定。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, user_id, message_id FROM records
+                WHERE channel_id = ? AND (message_id = ? OR reply_message_id = ?)
+                ORDER BY id DESC LIMIT 1
+                """,
+                (channel_id, message_id, message_id),
+            ).fetchone()
+            if row is not None:
+                return LastSenryu(
+                    source="record",
+                    source_id=row[0],
+                    channel_id=channel_id,
+                    reply_message_id=row[2],
+                    author_user_ids=frozenset({row[1]}),
+                    detected_at=0.0,
+                )
+            row = self._conn.execute(
+                """
+                SELECT id, parts_json FROM chain_records
+                WHERE channel_id = ? AND (
+                    reply_message_id = ? OR EXISTS (
+                        SELECT 1 FROM json_each(chain_records.parts_json)
+                        WHERE json_extract(value, '$.message_id') = ?
+                    )
+                )
+                ORDER BY id DESC LIMIT 1
+                """,
+                (channel_id, message_id, message_id),
+            ).fetchone()
+        if row is None:
+            return None
+        parts = json.loads(row[1])
+        return LastSenryu(
+            source="chain_record",
+            source_id=row[0],
+            channel_id=channel_id,
+            reply_message_id=parts[-1]["message_id"],
+            author_user_ids=frozenset(p["user_id"] for p in parts),
+            detected_at=0.0,
+        )
 
     def register_disapproval(self, *, source: str, source_id: int, user_id: int) -> bool:
         """指定した詠みへの否定評価(誤検出の指摘)を1件記録する。

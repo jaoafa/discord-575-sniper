@@ -15,6 +15,7 @@ Client を実際に組み立てた上でスタブの discord.Message 相当オ�
 
 import sqlite3
 import time
+import types
 
 import discord
 import pytest
@@ -31,6 +32,7 @@ CHANNEL_ID = 2000
 OTHER_GUILD_ID = 9999
 THREAD_ID = 3000
 PARENT_CHANNEL_ID = 2001
+BOT_REPLY_ID_OFFSET = 100000
 
 
 class FakeGuild:
@@ -65,17 +67,19 @@ class FakeChannel:
 class FakeMessage:
     """discord.Message の代わりに on_message へ渡すスタブオブジェクト。"""
 
-    def __init__(self, content, guild, author, channel, message_id: int = 9000):
+    def __init__(self, content, guild, author, channel, message_id: int = 9000, reference=None):
         self.content = content
         self.guild = guild
         self.author = author
         self.channel = channel
         self.id = message_id
+        self.reference = reference
         self.reply_calls = []
 
     async def reply(self, text):
-        """message.reply() 呼び出しを記録するスタブ実装。"""
+        """message.reply() 呼び出しを記録し、Bot の返信メッセージ相当を返すスタブ実装。"""
         self.reply_calls.append(text)
+        return types.SimpleNamespace(id=self.id + BOT_REPLY_ID_OFFSET)
 
 
 SENRYU_TEXT = "古池や蛙飛び込む水の音"
@@ -554,7 +558,7 @@ async def test_on_message_ignores_appare_without_prior_senryu(client):
 
 @pytest.mark.asyncio
 async def test_on_message_ignores_appare_after_praise_window_expires(client, monkeypatch):
-    """直前の詠みの検出から300秒を超えて経過すると、あっぱれメッセージに反応しないことを確認する。"""
+    """直前の詠みの検出から3600秒を超えて経過すると、あっぱれメッセージに反応しないことを確認する。"""
     clock = {"value": 0.0}
     monkeypatch.setattr(time, "monotonic", lambda: clock["value"])
 
@@ -567,7 +571,7 @@ async def test_on_message_ignores_appare_after_praise_window_expires(client, mon
     )
     await client.on_message(detect_message)
 
-    clock["value"] = 300.01
+    clock["value"] = 3600.01
     appare_message = FakeMessage(
         "あっぱれ",
         FakeGuild(GUILD_ID),
@@ -578,6 +582,35 @@ async def test_on_message_ignores_appare_after_praise_window_expires(client, mon
     await client.on_message(appare_message)
 
     assert detect_message.channel.send_calls == []
+
+
+@pytest.mark.asyncio
+async def test_on_message_replies_appare_at_exactly_3600_seconds(client, monkeypatch):
+    """直前の詠みの検出からちょうど3600秒後のあっぱれには反応することを確認する。"""
+    clock = {"value": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["value"])
+
+    detect_message = FakeMessage(
+        SENRYU_TEXT,
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=7000),
+        FakeChannel(CHANNEL_ID),
+        message_id=9310,
+    )
+    await client.on_message(detect_message)
+
+    clock["value"] = 3600.0
+    appare_message = FakeMessage(
+        "あっぱれ",
+        FakeGuild(GUILD_ID),
+        FakeAuthor(bot=False, author_id=8000),
+        detect_message.channel,
+        message_id=9311,
+    )
+    await client.on_message(appare_message)
+
+    assert len(detect_message.channel.send_calls) == 1
+    assert detect_message.channel.send_calls[0][0] == "あっぱれ頂きました！(1)"
 
 
 @pytest.mark.asyncio
@@ -839,6 +872,130 @@ async def test_irrelevant_reactions_are_ignored(client, records_db_path):
     ):
         await client.on_raw_reaction_add(payload)
     assert _disapproval_rows(records_db_path) == []
+
+
+def _reply_to(message_id: int):
+    """message.reference 相当のスタブ(返信先メッセージ ID のみを持つ)を返す。"""
+    return types.SimpleNamespace(message_id=message_id)
+
+
+async def _detect_senryu(client, channel, *, message_id: int, author_id: int = 7000):
+    """川柳を1件投稿して検出させ、そのメッセージを返す。"""
+    message = FakeMessage(
+        SENRYU_TEXT, FakeGuild(GUILD_ID), FakeAuthor(bot=False, author_id=author_id),
+        channel, message_id=message_id,
+    )
+    await client.on_message(message)
+    return message
+
+
+async def _send_appare(client, channel, *, message_id: int, reference, author_id: int = 8000):
+    """返信形式のあっぱれを投稿する。"""
+    message = FakeMessage(
+        "あっぱれ", FakeGuild(GUILD_ID), FakeAuthor(bot=False, author_id=author_id),
+        channel, message_id=message_id, reference=reference,
+    )
+    await client.on_message(message)
+    return message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_offset", [0, BOT_REPLY_ID_OFFSET])
+async def test_on_message_appare_reply_targets_replied_senryu_not_latest(client, target_offset):
+    """詠みAの検出返信または元メッセージへの返信のあっぱれは、最新の詠みBではなくAに加算されることを確認する。"""
+    channel = FakeChannel(CHANNEL_ID)
+    await _detect_senryu(client, channel, message_id=9800)
+    await _detect_senryu(client, channel, message_id=9810)
+
+    await _send_appare(
+        client, channel, message_id=9820, reference=_reply_to(9800 + target_offset),
+    )
+
+    assert len(channel.send_calls) == 1
+    content, reference = channel.send_calls[0]
+    assert content == "あっぱれ頂きました！(1)"
+    assert reference.message_id == 9800
+
+    await _send_appare(client, channel, message_id=9821, reference=None, author_id=8001)
+    assert channel.send_calls[1][0] == "あっぱれ頂きました！(1)"
+    assert channel.send_calls[1][1].message_id == 9810
+
+
+@pytest.mark.asyncio
+async def test_on_message_appare_reply_has_no_time_limit(client, monkeypatch):
+    """返信形式のあっぱれは、検出から1日経過していても返信先の詠みに加算されることを確認する。"""
+    clock = {"value": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["value"])
+    channel = FakeChannel(CHANNEL_ID)
+    await _detect_senryu(client, channel, message_id=9830)
+
+    clock["value"] = 86400.0
+    await _send_appare(client, channel, message_id=9831, reference=_reply_to(9830))
+
+    assert len(channel.send_calls) == 1
+    assert channel.send_calls[0][0] == "あっぱれ頂きました！(1)"
+    assert channel.send_calls[0][1].message_id == 9830
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_id", [9900, 9901, 9902, 9902 + BOT_REPLY_ID_OFFSET])
+async def test_on_message_appare_reply_targets_renga(client, target_id):
+    """連歌の各パートの元メッセージ、または検出返信への返信のあっぱれが、その連歌に加算されることを確認する。"""
+    channel = FakeChannel(CHANNEL_ID)
+    for i, (text, author_id) in enumerate(zip(["古池や", "蛙飛び込む", "水の音"], [1, 2, 1])):
+        await client.on_message(FakeMessage(
+            text, FakeGuild(GUILD_ID), FakeAuthor(bot=False, author_id=author_id),
+            channel, message_id=9900 + i,
+        ))
+    await _detect_senryu(client, channel, message_id=9910, author_id=7000)
+
+    await _send_appare(client, channel, message_id=9920, reference=_reply_to(target_id), author_id=3)
+
+    assert len(channel.send_calls) == 1
+    content, reference = channel.send_calls[0]
+    assert content == "あっぱれ頂きました！(1)"
+    assert reference.message_id == 9902
+
+
+@pytest.mark.asyncio
+async def test_on_message_ignores_appare_reply_from_renga_contributor(client):
+    """連歌の寄与者が自分の連歌への返信であっぱれを送っても反応しないことを確認する。"""
+    channel = FakeChannel(CHANNEL_ID)
+    for i, (text, author_id) in enumerate(zip(["古池や", "蛙飛び込む", "水の音"], [1, 2, 1])):
+        await client.on_message(FakeMessage(
+            text, FakeGuild(GUILD_ID), FakeAuthor(bot=False, author_id=author_id),
+            channel, message_id=9930 + i,
+        ))
+
+    await _send_appare(client, channel, message_id=9940, reference=_reply_to(9930), author_id=2)
+
+    assert channel.send_calls == []
+
+
+@pytest.mark.asyncio
+async def test_on_message_ignores_appare_reply_to_non_senryu_message(client):
+    """詠みでないメッセージへの返信のあっぱれは、最新の詠みがあっても反応しないことを確認する。"""
+    channel = FakeChannel(CHANNEL_ID)
+    await _detect_senryu(client, channel, message_id=9950)
+
+    await _send_appare(client, channel, message_id=9951, reference=_reply_to(123456))
+
+    assert channel.send_calls == []
+
+
+@pytest.mark.asyncio
+async def test_on_message_ignores_appare_reply_when_lookup_fails(client, record_store, monkeypatch):
+    """返信先の検索で例外が起きても、何も送信せず例外が on_message の外へ出ないことを確認する。"""
+    channel = FakeChannel(CHANNEL_ID)
+    await _detect_senryu(client, channel, message_id=9960)
+
+    def raise_error(message_id, channel_id):
+        raise RuntimeError("lookup failed")
+
+    monkeypatch.setattr(record_store, "find_senryu_by_message_id", raise_error)
+    await _send_appare(client, channel, message_id=9961, reference=_reply_to(9960))
+
+    assert channel.send_calls == []
 
 
 def _get_explain_command(client):
