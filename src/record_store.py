@@ -266,6 +266,35 @@ class RecordStore:
             self._conn.commit()
             return cursor.lastrowid
 
+    def has_recent_record(
+        self, *, channel_id: int, parts: tuple[str, ...], since: str
+    ) -> bool:
+        """同一チャンネルに、同じ連結テキストの詠みが since 以降に記録済みかを返す。
+
+        投稿者は問わない。連結テキストで比較するため、川柳と短歌は区別されるが、
+        パートの区切り位置だけが違う詠みは同一とみなす。
+
+        Args:
+            channel_id: 対象チャンネルの ID。
+            parts: 検出した詠みの各パート。
+            since: この時刻以降(境界を含む)の記録を対象にする ISO 8601 UTC 文字列。
+                detected_at と同じ形式のため文字列比較で時刻順になる。
+
+        Returns:
+            該当する records が1件でもあれば True。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1 FROM records
+                WHERE channel_id = ? AND detected_at >= ?
+                  AND part1 || part2 || part3 || COALESCE(part4, '') || COALESCE(part5, '') = ?
+                LIMIT 1
+                """,
+                (channel_id, since, "".join(parts)),
+            ).fetchone()
+        return row is not None
+
     def add_chain_record(
         self,
         *,
