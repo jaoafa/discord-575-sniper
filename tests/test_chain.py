@@ -366,12 +366,13 @@ def test_message_with_too_many_inner_breaks_resets_chain():
     ) is None
 
 
-def _noisy_morphemes() -> list[Morpheme]:
-    """句内に区切りが4つ混ざり、スコアが MIN_SCORE を下回る5モーラのメッセージを作るテスト用ヘルパー。"""
+def _noisy_morphemes(breaks: int = 4) -> list[Morpheme]:
+    """句内に区切りが breaks 個混ざった5モーラのメッセージを作るテスト用ヘルパー(区切りは1〜4個)。"""
     comma = Morpheme(surface="、", reading="、", mora=0, start=0, end=1, pos="補助記号")
-    noisy = [Morpheme(surface="あ", reading="ア", mora=1, start=0, end=1, pos="名詞")]
-    for _ in range(4):
-        noisy += [comma, Morpheme(surface="い", reading="イ", mora=1, start=0, end=1, pos="名詞")]
+    moras = [1] * breaks + [5 - breaks]
+    noisy = [Morpheme(surface="あ", reading="ア", mora=moras[0], start=0, end=1, pos="名詞")]
+    for mora in moras[1:]:
+        noisy += [comma, Morpheme(surface="い", reading="イ", mora=mora, start=0, end=1, pos="名詞")]
     return noisy
 
 
@@ -392,7 +393,7 @@ def _ineligible_cases() -> list[tuple[list[Morpheme], str]]:
             [Morpheme(surface="っっっっっ", reading="ッッッッッ", mora=5, start=0, end=5, pos="記号")],
             "促音(ッ)だけで構成されています",
         ),
-        (_noisy_morphemes(), "スコア不足です(score=0.20 < MIN_SCORE=0.30)"),
+        (_noisy_morphemes(), "スコア不足です(score=0.20 < MIN_SCORE=0.50)"),
     ]
 
 
@@ -400,6 +401,18 @@ def _ineligible_cases() -> list[tuple[list[Morpheme], str]]:
 def test_chain_ineligibility_reason_is_none_for_eligible_message(morphemes):
     """5モーラ・7モーラの正常なメッセージは適格(None)であることを確認する。"""
     assert chain_ineligibility_reason(morphemes) is None
+
+
+def test_chain_ineligibility_reason_rejects_three_inner_breaks():
+    """句内の区切りが3つ(スコア0.40)のメッセージは、足切りでスコア不足と判定されることを確認する。"""
+    assert chain_ineligibility_reason(_noisy_morphemes(3)) == (
+        "スコア不足です(score=0.40 < MIN_SCORE=0.50)"
+    )
+
+
+def test_chain_ineligibility_reason_accepts_two_inner_breaks():
+    """句内の区切りが2つ(スコア0.60)のメッセージは、足切りを通ることを確認する。"""
+    assert chain_ineligibility_reason(_noisy_morphemes(2)) is None
 
 
 @pytest.mark.parametrize("morphemes, expected", _ineligible_cases())

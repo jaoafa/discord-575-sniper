@@ -25,6 +25,7 @@ from src.config_store import ConfigStore
 from src.discord_client import create_bot
 from src.record_store import RecordStore
 from src.senryu.chain import ChainTracker
+from src.senryu.finder import MIN_SCORE
 from src.senryu.praise import PraiseTracker
 
 GUILD_ID = 1000
@@ -795,7 +796,7 @@ async def test_on_message_stores_reply_id_score_and_overall_match(client, record
     row = conn.execute("SELECT reply_message_id, score, overall_match FROM records").fetchone()
     conn.close()
     assert row[0] == FakeReplyMessage.reply_id
-    assert row[1] is not None and row[1] >= 0.3
+    assert row[1] is not None and row[1] >= MIN_SCORE
     assert row[2] == pytest.approx(1.0)
 
 

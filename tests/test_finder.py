@@ -1,3 +1,5 @@
+import pytest
+
 from src.senryu.finder import (
     BASE_SCORE,
     BREAK_IN_PART_PENALTY,
@@ -11,7 +13,7 @@ from src.senryu.finder import (
     pick_best,
     score_candidate,
 )
-from src.senryu.tokenizer import Morpheme
+from src.senryu.tokenizer import Morpheme, tokenize
 
 
 def _m(surface, mora, start, end, pos=""):
@@ -245,8 +247,11 @@ def test_word_internal_sokuon_is_kept():
 
 def test_clean_candidate_scores_higher_than_inner_break_candidate():
     """句内に区切りが無い候補のスコアが、句内に区切りを含む候補より高いことを確認する。"""
-    clean = [_r("あいうえお", 5), _r("かきくけこさし", 7), _r("たちつてと", 5)]
-    broken = [_r("あい", 2), _brk(), _r("うえお", 3), _r("かきくけこさし", 7), _r("たちつてと", 5)]
+    clean = [_r("あいうえお", 5, pos="動詞"), _r("かきくけこさし", 7, pos="動詞"), _r("たちつてと", 5)]
+    broken = [
+        _r("あい", 2), _brk(), _r("うえお", 3, pos="動詞"),
+        _r("かきくけこさし", 7, pos="動詞"), _r("たちつてと", 5),
+    ]
     clean_score, _ = score_candidate(clean, [(0, 1), (1, 2), (2, 3)])
     broken_score, _ = score_candidate(broken, [(0, 3), (3, 4), (4, 5)])
     assert clean_score == BASE_SCORE + COVERAGE_WEIGHT + 2 * EDGE_BONUS
@@ -264,8 +269,8 @@ def test_single_inner_break_candidate_is_still_detected():
 def test_two_inner_breaks_weak_candidate_is_rejected():
     """句内区切りが2つ以上で、全体一致度が低く両端も整列していない候補は棄却されることを確認する。"""
     core = [
-        _r("あ", 1), _brk(), _r("い", 1), _brk(), _r("うえお", 3),
-        _r("かきくけこさし", 7), _r("たちつてと", 5),
+        _r("あ", 1), _brk(), _r("い", 1), _brk(), _r("うえお", 3, pos="動詞"),
+        _r("かきくけこさし", 7, pos="動詞"), _r("たちつてと", 5),
     ]
     weak = [_r("あ" * 10, 10)] + core + [_r("い" * 10, 10)]
     assert pick_best(find_candidates(weak, "")) is None
@@ -276,22 +281,27 @@ def test_two_inner_breaks_weak_candidate_is_rejected():
 def test_newline_counts_as_break():
     """改行(空白形態素の \\n)も句内の区切りとして数えられることを確認する。"""
     newline = _r("\n", 0, reading="\n", pos="空白")
-    morphemes = [_r("あい", 2), newline, _r("うえお", 3), _r("かきくけこさし", 7), _r("たちつてと", 5)]
+    morphemes = [
+        _r("あい", 2), newline, _r("うえお", 3, pos="動詞"),
+        _r("かきくけこさし", 7, pos="動詞"), _r("たちつてと", 5),
+    ]
     score, _ = score_candidate(morphemes, [(0, 3), (3, 4), (4, 5)])
     assert score == BASE_SCORE + COVERAGE_WEIGHT + 2 * EDGE_BONUS - BREAK_IN_PART_PENALTY
 
 
 def test_break_at_end_of_part_is_not_penalized():
     """パート末尾側に付く区切り(自然な句切れ)は減点されないことを確認する。"""
-    morphemes = [_r("あいうえお", 5), _brk(), _r("かきくけこさし", 7), _r("たちつてと", 5)]
+    morphemes = [_r("あいうえお", 5), _brk(), _r("かきくけこさし", 7, pos="動詞"), _r("たちつてと", 5)]
     score, _ = score_candidate(morphemes, [(0, 2), (2, 3), (3, 4)])
     assert score == BASE_SCORE + COVERAGE_WEIGHT + 2 * EDGE_BONUS
 
 
 def test_particle_ending_is_not_penalized():
     """助詞で終わる候補が、他の条件が同じ名詞終わりの候補と同じスコアになることを確認する。"""
-    noun_end = [_r("あいうえお", 5), _r("かきくけこさし", 7), _r("たちつてと", 5)]
-    particle_end = [_r("あいうえお", 5), _r("かきくけこさし", 7), _r("たちつてと", 5, pos="助詞")]
+    noun_end = [_r("あいうえお", 5, pos="動詞"), _r("かきくけこさし", 7, pos="動詞"), _r("たちつてと", 5)]
+    particle_end = [
+        _r("あいうえお", 5, pos="動詞"), _r("かきくけこさし", 7, pos="動詞"), _r("たちつてと", 5, pos="助詞"),
+    ]
     ranges = [(0, 1), (1, 2), (2, 3)]
     assert score_candidate(noun_end, ranges) == score_candidate(particle_end, ranges)
 
@@ -307,3 +317,72 @@ def test_pick_best_rejects_candidates_below_min_score():
     """MIN_SCORE 未満の候補しか無ければ None を返すことを確認する。"""
     c = Candidate(0, 3, "あ", ("a", "b", "c"), SENRYU_PATTERN, score=MIN_SCORE - 0.01)
     assert pick_best([c]) is None
+
+
+def test_min_score_is_half():
+    """足切りの閾値が 0.5 であることを確認する。"""
+    assert MIN_SCORE == 0.5
+
+
+def test_noun_noun_boundary_is_penalized_in_proportion_to_boundaries():
+    """名詞+名詞の境界は、全パート境界に占める割合に応じて最大 BREAK_IN_PART_PENALTY まで減点されることを確認する。"""
+    ranges = [(0, 1), (1, 3), (3, 4)]
+
+    def build(first_pos, second_end_pos):
+        return [
+            _r("あいうえお", 5, pos=first_pos), _r("かきくけこ", 5), _r("さし", 2, pos=second_end_pos),
+            _r("たちつてと", 5),
+        ]
+
+    base = score_candidate(build("動詞", "動詞"), ranges)[0]
+    assert score_candidate(build("名詞", "動詞"), ranges)[0] == pytest.approx(base - BREAK_IN_PART_PENALTY / 2)
+    assert score_candidate(build("名詞", "名詞"), ranges)[0] == pytest.approx(base - BREAK_IN_PART_PENALTY)
+
+
+def test_non_noun_boundary_is_not_penalized():
+    """境界の前後のどちらかが名詞以外(助詞・補助記号)なら減点されないことを確認する。"""
+    ranges = [(0, 1), (1, 2), (2, 3)]
+    expected = BASE_SCORE + COVERAGE_WEIGHT + 2 * EDGE_BONUS
+    after_particle = [_r("あいうえお", 5, pos="助詞"), _r("かきくけこさし", 7, pos="助詞"), _r("たちつてと", 5)]
+    before_particle = [_r("あいうえお", 5), _r("かきくけこさし", 7, pos="助詞"), _r("たちつてと", 5)]
+    assert score_candidate(after_particle, ranges)[0] == pytest.approx(expected)
+    assert score_candidate(before_particle, ranges)[0] == pytest.approx(expected)
+    symbol_between = [_r("あいうえお", 5), _brk(), _r("かきくけこさし", 7, pos="助詞"), _r("たちつてと", 5)]
+    assert score_candidate(symbol_between, [(0, 2), (2, 3), (3, 4)])[0] == pytest.approx(expected)
+
+
+def test_single_break_low_coverage_candidate_is_rejected():
+    """区切りが1つだけでも、全体一致度が低く両端が整列していない候補は足切りで棄却されることを確認する。"""
+    core = [
+        _r("あい", 2), _brk(), _r("うえお", 3, pos="助詞"),
+        _r("かきくけこ", 5, pos="動詞"), _r("さし", 2, pos="助詞"), _r("たちつてと", 5),
+    ]
+    weak = [_r("あ" * 10, 10)] + core + [_r("い" * 10, 10)]
+    candidates = find_candidates(weak, "")
+    assert candidates
+    assert max(c.score for c in candidates) < MIN_SCORE
+    assert pick_best(candidates) is None
+
+
+def test_mushouryoku_split_scores_below_unbroken_split():
+    """「無重力/みたいな動き/方するな」のように境界2つ中1つが名詞+名詞で割れる分割は、同条件の分割より0.1低いことを確認する。"""
+    def build(kata_pos):
+        return [
+            _r("無重力", 5), _r("みたい", 3, pos="形状詞"), _r("な", 1, pos="助動詞"),
+            _r("動き", 3), _r("方", 2, pos=kata_pos), _r("する", 2, pos="動詞"), _r("な", 1, pos="助詞"),
+        ]
+    ranges = [(0, 1), (1, 4), (4, 7)]
+    split_score, _ = score_candidate(build("名詞"), ranges)
+    unbroken_score, _ = score_candidate(build("接尾辞"), ranges)
+    assert unbroken_score == pytest.approx(BASE_SCORE + COVERAGE_WEIGHT + 2 * EDGE_BONUS)
+    assert split_score == pytest.approx(unbroken_score - BREAK_IN_PART_PENALTY / 2)
+
+
+def test_tanka_with_noun_noun_boundaries_still_beats_inner_senryu():
+    """名詞+名詞の境界を含む短歌が、内側の川柳より優先して選ばれることを確認する。"""
+    text = "古池や蛙飛び込む水の音やまぶきのえだうめがかがやく"
+    best = pick_best(find_candidates(tokenize(text), text))
+    assert best is not None
+    assert best.pattern == TANKA_PATTERN
+    # 境界4つのうち「音|やまぶき」「えだ|うめ」の2つが名詞+名詞なので、減点は半分になる。
+    assert best.score == pytest.approx(1.0 - BREAK_IN_PART_PENALTY / 2)
