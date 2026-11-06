@@ -127,6 +127,35 @@ DB は読み取り専用で開き、書き込みはしない。稼働中の Bot 
 - `chain_records` は形態素を保存していないため、再現の対象外(評価サマリにのみ含まれる)
 - 連歌・独吟の返信メッセージ ID を保存する前の `chain_records` は `reply_message_id` が NULL のままで、遡って補えない
 
+### 記録の退避
+
+質の低い・重複した `records` の行は、削除せずに `quarantined_records` テーブルへ退避できる。退避した記録は `records` だけを参照する機能(`/senryu remix`・`/senryu delete`・あっぱれ・👎)の対象から外れる。`praises`・`praise_users`・`disapprovals` は消さないので、復元すれば元どおりに引ける。
+
+```bash
+python -m src.quarantine [--db data/records.db] [--apply]
+python -m src.quarantine restore [--db data/records.db] [--apply] (--all | --id ID [--id ID ...])
+```
+
+既定は dry-run で、DB を変更せず理由ごとの件数と対象 ID を出力する。`--apply` を付けると実行し、変更の前に `<DB ファイル名>.bak-<UTC 日時>` へ DB のバックアップを作る。実行は Bot を止めてから行い、手順は「Bot を止める → dry-run で確認 → `--apply` → Bot を再開」とする。対象が 0 件の `--apply` は何も変更せず、バックアップも作らない。同じ DB に対して繰り返し実行しても、移動済みの行が二重に移ることはない。
+
+退避の理由(`quarantine_reason`)は、次の優先順で最初に該当する 1 つだけを記録する。あっぱれが付いた記録は、いずれの条件でも対象外になる。
+
+| 理由 | 条件 |
+|---|---|
+| `duplicate` | 同一テキスト(`mora > 0` の形態素の表層を連結した文字列)の 2 件目以降。同一テキストのうち `id` が最小の 1 件は残す |
+| `only_sokuon` | 促音だけのパートを含む |
+| `disapproved` | 👎 が 1 票以上 |
+| `low_score` | `score` が 0.5 未満(`score` が NULL の旧記録は対象外) |
+
+`restore` も既定は dry-run で、`--apply` で元の `id` のまま `records` に戻す。`--all` は退避済みの全件、`--id` は指定した `id` だけを戻す。
+
+注意:
+
+- `duplicate` で残す 1 件は免除の有無に関係なく同一テキストの最小 `id` で決めるため、その行が `disapproved` や `low_score` で退避されると、そのテキストは `records` から無くなる
+- 復元した行は、退避の条件に該当すれば次の `--apply` で再び退避される(`duplicate` は、同一テキストの最小 `id` の行が `records` に残っている場合に限る)
+- 重複の照合は `records` の中だけで行い、退避済みの行は含めない
+- `morphemes_json` を解釈できない行や、音数が合わない行があると、DB を変更せずにエラーで終了する
+
 ## テスト
 
 ```bash
