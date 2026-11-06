@@ -16,13 +16,13 @@ _NON_STARTING_POS = {"助詞", "助動詞", "接尾辞", "補助記号", "空白
 _ZERO_MORA_IGNORE_POS = {"補助記号", "空白"}
 
 # 候補の「質」を決めるスコア(0.0〜1.0 付近)の定数。句読点・改行・全体一致度は
-# あくまでソフトな手掛かりで、単独では候補を禁止しない(句内区切りがちょうど1つだけの
-# 候補は MIN_SCORE を下回らない)。値は暫定で、records.score と評価データを見て調整する。
+# あくまでソフトな手掛かりで、単独では候補を禁止しない。値は暫定で、
+# records.score と評価データを見て調整する。
 BASE_SCORE = 0.5
 COVERAGE_WEIGHT = 0.3
 EDGE_BONUS = 0.1
 BREAK_IN_PART_PENALTY = 0.2
-MIN_SCORE = 0.3
+MIN_SCORE = 0.5
 
 # 句の切れ目の手掛かりになる記号。改行は surface に \n を含む空白形態素で判定する。
 _BREAK_CHARS = set("、。,.，．!?！？…‥")
@@ -88,7 +88,11 @@ def score_candidate(
     morphemes が採用区間だけの場合に、元のメッセージ全体の総モーラ数を渡して
     coverage を再現するために使う(mora.py の関数 total_mora とは別物)。
     score は coverage が高いほど、候補の先頭・末尾が文や句の境界に揃っているほど高く、
-    パートの途中に句読点・改行が入っているほど低い。助詞・助動詞で終わるかどうかは見ない。
+    パートの途中に句読点・改行が入っているほど低い。
+    パート境界の前後がともに名詞の場合は語の途中で割れている可能性が高いため減点する。
+    減点は全パート境界に占める該当境界の割合に比例し、最大で句読点・改行1つ分とする。
+    境界の数が多い短歌が不利にならないようにするためである。
+    助詞・助動詞で終わるかどうかは見ない。
     単一メッセージ内探索(本モジュール)と複数メッセージ結合探索(chain.py)の
     両方から使う共通の判定なので、モジュール非公開名にしていない。
     """
@@ -105,6 +109,12 @@ def score_candidate(
             e -= 1
         inner_breaks += sum(_is_break(m) for m in morphemes[s:e])
 
+    boundaries = part_ranges[:-1]
+    noun_noun = sum(
+        morphemes[e - 1].pos == "名詞" and morphemes[e].pos == "名詞" for _, e in boundaries
+    )
+    mid_word_split_ratio = noun_noun / len(boundaries) if boundaries else 0.0
+
     first = part_ranges[0][0]
     start_aligned = first == 0 or _is_boundary(morphemes[first - 1])
     last_start, last_end = part_ranges[-1]
@@ -117,6 +127,7 @@ def score_candidate(
         + COVERAGE_WEIGHT * coverage
         + EDGE_BONUS * (start_aligned + end_aligned)
         - BREAK_IN_PART_PENALTY * inner_breaks
+        - BREAK_IN_PART_PENALTY * mid_word_split_ratio
     )
     return score, coverage
 

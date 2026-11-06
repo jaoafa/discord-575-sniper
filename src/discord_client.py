@@ -28,6 +28,9 @@ _REPLY_HEADERS: dict[int, str] = {
 # 誤検出の指摘(否定評価)として扱うリアクション絵文字。Bot の検出返信に付けられたものが対象。
 _DISAPPROVAL_EMOJI = "👎"
 
+# 検出の良さの表明(肯定評価)として扱うリアクション絵文字。対象は _DISAPPROVAL_EMOJI と同じ。
+_APPROVAL_EMOJI = "👍"
+
 # 同一チャンネルで同じ詠みを再検出しても、この秒数以内に記録済みなら返信も記録もしない。
 DUPLICATE_SUPPRESS_SECONDS = 24 * 60 * 60
 
@@ -729,17 +732,22 @@ def create_bot(
                         now=time.monotonic(),
                     )
 
-    async def _handle_disapproval_reaction(
+    async def _handle_rating_reaction(
         payload: discord.RawReactionActionEvent, *, added: bool
     ) -> None:
-        """Bot の検出返信への 👎 リアクションの追加・取消を否定評価として記録・取消する。
+        """Bot の検出返信への 👍 / 👎 リアクションの追加・取消を肯定・否定評価として記録・取消する。
 
-        対象ギルド外・👎 以外・Bot 自身のリアクション、および検出返信以外のメッセージへの
+        対象ギルド外・👍 / 👎 以外・Bot 自身のリアクション、および検出返信以外のメッセージへの
         リアクションは何もしない。評価への応答メッセージは送らない。
         """
         if payload.guild_id != guild_id:
             return
-        if str(payload.emoji) != _DISAPPROVAL_EMOJI:
+        emoji = str(payload.emoji)
+        if emoji == _DISAPPROVAL_EMOJI:
+            register, remove = record_store.register_disapproval, record_store.remove_disapproval
+        elif emoji == _APPROVAL_EMOJI:
+            register, remove = record_store.register_approval, record_store.remove_approval
+        else:
             return
         if client.user is not None and payload.user_id == client.user.id:
             return
@@ -751,22 +759,22 @@ def create_bot(
             if target is None:
                 return
             source, source_id = target
-            update = record_store.register_disapproval if added else record_store.remove_disapproval
             await asyncio.to_thread(
-                update, source=source, source_id=source_id, user_id=payload.user_id
+                register if added else remove,
+                source=source, source_id=source_id, user_id=payload.user_id,
             )
         except Exception:
-            logger.exception("否定評価リアクションの処理中に例外が発生しました。")
+            logger.exception("評価リアクションの処理中に例外が発生しました。")
 
     @client.event
     async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-        """リアクション追加時、Bot の検出返信への 👎 を否定評価として記録する。"""
-        await _handle_disapproval_reaction(payload, added=True)
+        """リアクション追加時、Bot の検出返信への 👍 / 👎 を肯定・否定評価として記録する。"""
+        await _handle_rating_reaction(payload, added=True)
 
     @client.event
     async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
-        """リアクション取消時、Bot の検出返信への 👎 の否定評価を取り消す。"""
-        await _handle_disapproval_reaction(payload, added=False)
+        """リアクション取消時、Bot の検出返信への 👍 / 👎 の評価を取り消す。"""
+        await _handle_rating_reaction(payload, added=False)
 
     senryu_group = app_commands.Group(name="senryu", description="川柳検出 Bot のチャンネル設定")
 

@@ -809,6 +809,7 @@ def test_migrates_old_schema_keeping_existing_rows(tmp_path):
     assert row == ("a", None, None, None)
     assert "reply_message_id" in chain_columns
     assert "disapprovals" in tables
+    assert "approvals" in tables
 
 
 def test_find_source_by_reply_message_id_searches_both_tables(tmp_path):
@@ -833,6 +834,25 @@ def test_register_and_remove_disapproval(tmp_path):
     assert store.register_disapproval(source="record", source_id=1, user_id=11) is True
     assert store.remove_disapproval(source="record", source_id=1, user_id=10) is True
     assert store.remove_disapproval(source="record", source_id=1, user_id=10) is False
+
+
+def test_register_and_remove_approval(tmp_path):
+    """肯定評価は同一ユーザーの重複を作らず、取消は存在する場合のみ True になることを確認する。"""
+    store = RecordStore(str(tmp_path / "records.db"))
+    assert store.register_approval(source="record", source_id=1, user_id=10) is True
+    assert store.register_approval(source="record", source_id=1, user_id=10) is False
+    assert store.register_approval(source="record", source_id=1, user_id=11) is True
+    assert store.remove_approval(source="record", source_id=1, user_id=10) is True
+    assert store.remove_approval(source="record", source_id=1, user_id=10) is False
+
+
+def test_approval_and_disapproval_are_independent(tmp_path):
+    """同じユーザーの肯定評価と否定評価は互いに影響せず、それぞれ取り消せることを確認する。"""
+    store = RecordStore(str(tmp_path / "records.db"))
+    assert store.register_approval(source="record", source_id=1, user_id=10) is True
+    assert store.register_disapproval(source="record", source_id=1, user_id=10) is True
+    assert store.remove_approval(source="record", source_id=1, user_id=10) is True
+    assert store.remove_disapproval(source="record", source_id=1, user_id=10) is True
 
 
 def _add_record(store, *, channel_id=2000, user_id=3000, message_id=4000, reply_message_id=None):

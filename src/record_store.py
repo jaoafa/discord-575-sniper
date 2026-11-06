@@ -132,6 +132,16 @@ class RecordStore:
             )
             """
         )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS approvals (
+                source TEXT NOT NULL,
+                source_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                PRIMARY KEY (source, source_id, user_id)
+            )
+            """
+        )
         self._conn.commit()
 
     def _migrate_add_tanka_columns(self) -> None:
@@ -495,6 +505,39 @@ class RecordStore:
         with self._lock:
             cursor = self._conn.execute(
                 "DELETE FROM disapprovals WHERE source = ? AND source_id = ? AND user_id = ?",
+                (source, source_id, user_id),
+            )
+            self._conn.commit()
+        return cursor.rowcount > 0
+
+    def register_approval(self, *, source: str, source_id: int, user_id: int) -> bool:
+        """指定した詠みへの肯定評価(👍 リアクション)を1件記録する。
+
+        Args:
+            source: 詠みの由来。"record" または "chain_record"。
+            source_id: source に対応するテーブルの id。
+            user_id: 肯定評価をしたユーザーの ID。
+
+        Returns:
+            新規に記録できた場合 True。同じユーザーが既に評価済みの場合は False。
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "INSERT OR IGNORE INTO approvals (source, source_id, user_id) VALUES (?, ?, ?)",
+                (source, source_id, user_id),
+            )
+            self._conn.commit()
+        return cursor.rowcount > 0
+
+    def remove_approval(self, *, source: str, source_id: int, user_id: int) -> bool:
+        """指定した詠みへの肯定評価を取り消す(リアクションの取消に対応する)。
+
+        Returns:
+            記録を削除できた場合 True。該当する記録が無かった場合 False。
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM approvals WHERE source = ? AND source_id = ? AND user_id = ?",
                 (source, source_id, user_id),
             )
             self._conn.commit()

@@ -25,6 +25,7 @@ from src.config_store import ConfigStore
 from src.discord_client import create_bot
 from src.record_store import RecordStore
 from src.senryu.chain import ChainTracker
+from src.senryu.finder import MIN_SCORE
 from src.senryu.praise import PraiseTracker
 
 GUILD_ID = 1000
@@ -784,6 +785,13 @@ def _disapproval_rows(records_db_path):
     return rows
 
 
+def _approval_rows(records_db_path):
+    conn = sqlite3.connect(records_db_path)
+    rows = conn.execute("SELECT source, source_id, user_id FROM approvals").fetchall()
+    conn.close()
+    return rows
+
+
 @pytest.mark.asyncio
 async def test_on_message_stores_reply_id_score_and_overall_match(client, records_db_path):
     """検出返信のメッセージ ID・スコア・全体一致度が records に保存されることを確認する。"""
@@ -796,7 +804,7 @@ async def test_on_message_stores_reply_id_score_and_overall_match(client, record
     row = conn.execute("SELECT reply_message_id, score, overall_match FROM records").fetchone()
     conn.close()
     assert row[0] == FakeReplyMessage.reply_id
-    assert row[1] is not None and row[1] >= 0.3
+    assert row[1] is not None and row[1] >= MIN_SCORE
     assert row[2] == pytest.approx(1.0)
 
 
@@ -876,8 +884,53 @@ async def test_thumbs_down_on_chain_reply_is_recorded_and_removed(client, record
 
 
 @pytest.mark.asyncio
+async def test_thumbs_up_on_reply_is_recorded_and_removed(client, records_db_path):
+    """検出返信への 👍 が肯定評価として記録され、取り消すと消え、👎 とは独立していることを確認する。"""
+    message = FakeReplyMessage(
+        SENRYU_TEXT, FakeGuild(GUILD_ID), FakeAuthor(bot=False), FakeChannel(CHANNEL_ID)
+    )
+    await client.on_message(message)
+    up = FakeReactionPayload(message_id=FakeReplyMessage.reply_id, emoji="👍")
+    down = FakeReactionPayload(message_id=FakeReplyMessage.reply_id)
+
+    await client.on_raw_reaction_add(up)
+    await client.on_raw_reaction_add(up)  # 重複は増えない
+    await client.on_raw_reaction_add(down)
+    approvals = _approval_rows(records_db_path)
+    assert len(approvals) == 1 and approvals[0][0] == "record" and approvals[0][2] == 6000
+    assert len(_disapproval_rows(records_db_path)) == 1
+
+    await client.on_raw_reaction_remove(up)
+    assert _approval_rows(records_db_path) == []
+    assert len(_disapproval_rows(records_db_path)) == 1
+
+
+@pytest.mark.asyncio
+async def test_thumbs_up_on_chain_reply_is_recorded_and_removed(client, records_db_path):
+    """連歌・独吟の検出返信への 👍 が chain_record として記録され、取り消すと消えることを確認する。"""
+    author = FakeAuthor(bot=False, author_id=7000)
+    for i, text in enumerate(["古池や", "蛙飛び込む", "水の音"]):
+        message = FakeReplyMessage(
+            text, FakeGuild(GUILD_ID), author, FakeChannel(CHANNEL_ID), message_id=8600 + i,
+        )
+        await client.on_message(message)
+    conn = sqlite3.connect(records_db_path)
+    chain_id = conn.execute("SELECT id FROM chain_records").fetchone()[0]
+    conn.close()
+    payload = FakeReactionPayload(message_id=FakeReplyMessage.reply_id, emoji="👍")
+
+    await client.on_raw_reaction_add(payload)
+    await client.on_raw_reaction_add(payload)  # 重複は増えない
+    assert _approval_rows(records_db_path) == [("chain_record", chain_id, 6000)]
+    assert _disapproval_rows(records_db_path) == []
+
+    await client.on_raw_reaction_remove(payload)
+    assert _approval_rows(records_db_path) == []
+
+
+@pytest.mark.asyncio
 async def test_irrelevant_reactions_are_ignored(client, records_db_path):
-    """Bot 自身・別ギルド・👎以外・検出返信以外へのリアクションは記録されないことを確認する。"""
+    """Bot 自身・別ギルド・👍👎以外・検出返信以外へのリアクションは記録されないことを確認する。"""
     message = FakeReplyMessage(
         SENRYU_TEXT, FakeGuild(GUILD_ID), FakeAuthor(bot=False), FakeChannel(CHANNEL_ID)
     )
@@ -885,16 +938,18 @@ async def test_irrelevant_reactions_are_ignored(client, records_db_path):
     client._connection.user = FakeAuthor(bot=True, author_id=1234)
     reply_id = FakeReplyMessage.reply_id
 
-    for payload in (
-        FakeReactionPayload(message_id=reply_id, user_id=1234),
-        FakeReactionPayload(message_id=reply_id, guild_id=OTHER_GUILD_ID),
-        FakeReactionPayload(message_id=reply_id, guild_id=None),
-        FakeReactionPayload(message_id=reply_id, emoji="👍"),
-        FakeReactionPayload(message_id=message.id),  # 元メッセージ(Bot の返信ではない)
-        FakeReactionPayload(message_id=424242),
-    ):
-        await client.on_raw_reaction_add(payload)
+    for emoji in ("👎", "👍"):
+        for payload in (
+            FakeReactionPayload(message_id=reply_id, user_id=1234, emoji=emoji),
+            FakeReactionPayload(message_id=reply_id, guild_id=OTHER_GUILD_ID, emoji=emoji),
+            FakeReactionPayload(message_id=reply_id, guild_id=None, emoji=emoji),
+            FakeReactionPayload(message_id=message.id, emoji=emoji),  # 元メッセージ(Bot の返信ではない)
+            FakeReactionPayload(message_id=424242, emoji=emoji),
+        ):
+            await client.on_raw_reaction_add(payload)
+    await client.on_raw_reaction_add(FakeReactionPayload(message_id=reply_id, emoji="😀"))
     assert _disapproval_rows(records_db_path) == []
+    assert _approval_rows(records_db_path) == []
 
 
 def _reply_to(message_id: int):
