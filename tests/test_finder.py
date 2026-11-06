@@ -1,3 +1,5 @@
+import pytest
+
 from src.senryu.finder import (
     BASE_SCORE,
     BREAK_IN_PART_PENALTY,
@@ -307,3 +309,35 @@ def test_pick_best_rejects_candidates_below_min_score():
     """MIN_SCORE 未満の候補しか無ければ None を返すことを確認する。"""
     c = Candidate(0, 3, "あ", ("a", "b", "c"), SENRYU_PATTERN, score=MIN_SCORE - 0.01)
     assert pick_best([c]) is None
+
+
+def _plain_575():
+    return [_r("あいうえお", 5), _r("かきくけこさし", 7), _r("たちつてと", 5)]
+
+
+def test_score_candidate_total_mora_lowers_coverage():
+    """total_mora を渡すと、メッセージ全体に占める割合がその総モーラ数で計算されることを確認する。"""
+    ranges = [(0, 1), (1, 2), (2, 3)]
+    score, coverage = score_candidate(_plain_575(), ranges, total_mora=34)
+    assert coverage == 0.5
+    assert score == BASE_SCORE + COVERAGE_WEIGHT * 0.5 + 2 * EDGE_BONUS
+
+
+def test_score_candidate_without_total_mora_is_unchanged():
+    """total_mora を省略した場合と None を渡した場合で結果が従来と同じになることを確認する。"""
+    ranges = [(0, 1), (1, 2), (2, 3)]
+    assert score_candidate(_plain_575(), ranges) == score_candidate(
+        _plain_575(), ranges, total_mora=None
+    )
+    assert score_candidate(_plain_575(), ranges)[1] == 1.0
+
+
+def test_find_candidates_passes_total_mora_to_candidate_coverage():
+    """find_candidates に渡した total_mora が候補の coverage と score に反映されることを確認する。"""
+    morphemes = _plain_575()
+    default = find_candidates(morphemes, "")
+    scaled = find_candidates(morphemes, "", total_mora=34)
+    assert [c.parts for c in scaled] == [c.parts for c in default]
+    assert default[0].coverage == 1.0
+    assert scaled[0].coverage == 0.5
+    assert scaled[0].score == pytest.approx(default[0].score - COVERAGE_WEIGHT * 0.5)
