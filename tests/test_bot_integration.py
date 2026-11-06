@@ -854,6 +854,28 @@ async def test_thumbs_down_on_reply_is_recorded_and_removed(client, records_db_p
 
 
 @pytest.mark.asyncio
+async def test_thumbs_down_on_chain_reply_is_recorded_and_removed(client, records_db_path):
+    """連歌・独吟の検出返信への 👎 が chain_record として記録され、取り消すと消えることを確認する。"""
+    author = FakeAuthor(bot=False, author_id=7000)
+    for i, text in enumerate(["古池や", "蛙飛び込む", "水の音"]):
+        message = FakeReplyMessage(
+            text, FakeGuild(GUILD_ID), author, FakeChannel(CHANNEL_ID), message_id=8500 + i,
+        )
+        await client.on_message(message)
+    conn = sqlite3.connect(records_db_path)
+    chain_id = conn.execute("SELECT id FROM chain_records").fetchone()[0]
+    conn.close()
+    payload = FakeReactionPayload(message_id=FakeReplyMessage.reply_id)
+
+    await client.on_raw_reaction_add(payload)
+    await client.on_raw_reaction_add(payload)  # 重複は増えない
+    assert _disapproval_rows(records_db_path) == [("chain_record", chain_id, 6000)]
+
+    await client.on_raw_reaction_remove(payload)
+    assert _disapproval_rows(records_db_path) == []
+
+
+@pytest.mark.asyncio
 async def test_irrelevant_reactions_are_ignored(client, records_db_path):
     """Bot 自身・別ギルド・👎以外・検出返信以外へのリアクションは記録されないことを確認する。"""
     message = FakeReplyMessage(

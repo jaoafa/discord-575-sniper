@@ -386,3 +386,35 @@ def test_tanka_with_noun_noun_boundaries_still_beats_inner_senryu():
     assert best.pattern == TANKA_PATTERN
     # 境界4つのうち「音|やまぶき」「えだ|うめ」の2つが名詞+名詞なので、減点は半分になる。
     assert best.score == pytest.approx(1.0 - BREAK_IN_PART_PENALTY / 2)
+
+
+def _plain_575():
+    return [_r("あいうえお", 5, pos="動詞"), _r("かきくけこさし", 7, pos="動詞"), _r("たちつてと", 5)]
+
+
+def test_score_candidate_total_mora_lowers_coverage():
+    """total_mora を渡すと、メッセージ全体に占める割合がその総モーラ数で計算されることを確認する。"""
+    ranges = [(0, 1), (1, 2), (2, 3)]
+    score, coverage = score_candidate(_plain_575(), ranges, total_mora=34)
+    assert coverage == 0.5
+    assert score == BASE_SCORE + COVERAGE_WEIGHT * 0.5 + 2 * EDGE_BONUS
+
+
+def test_score_candidate_without_total_mora_is_unchanged():
+    """total_mora を省略した場合と None を渡した場合で結果が従来と同じになることを確認する。"""
+    ranges = [(0, 1), (1, 2), (2, 3)]
+    assert score_candidate(_plain_575(), ranges) == score_candidate(
+        _plain_575(), ranges, total_mora=None
+    )
+    assert score_candidate(_plain_575(), ranges)[1] == 1.0
+
+
+def test_find_candidates_passes_total_mora_to_candidate_coverage():
+    """find_candidates に渡した total_mora が候補の coverage と score に反映されることを確認する。"""
+    morphemes = _plain_575()
+    default = find_candidates(morphemes, "")
+    scaled = find_candidates(morphemes, "", total_mora=34)
+    assert [c.parts for c in scaled] == [c.parts for c in default]
+    assert default[0].coverage == 1.0
+    assert scaled[0].coverage == 0.5
+    assert scaled[0].score == pytest.approx(default[0].score - COVERAGE_WEIGHT * 0.5)
