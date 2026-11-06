@@ -76,18 +76,23 @@ def _is_boundary(m: Morpheme) -> bool:
 
 
 def score_candidate(
-    morphemes: list[Morpheme], part_ranges: list[tuple[int, int]]
+    morphemes: list[Morpheme],
+    part_ranges: list[tuple[int, int]],
+    total_mora: int | None = None,
 ) -> tuple[float, float]:
     """候補の質を表す (score, coverage) を求める。
 
     part_ranges は各パートの形態素範囲 [start, end)。coverage は候補の総モーラ数を
-    morphemes 全体の総モーラ数で割った値(全体が0モーラなら1.0)。
+    メッセージ全体の総モーラ数で割った値(全体が0モーラなら1.0)。
+    total_mora はメッセージ全体の総モーラ数で、省略時は morphemes 全体の総モーラ数を使う。
+    morphemes が採用区間だけの場合に、元のメッセージ全体の総モーラ数を渡して
+    coverage を再現するために使う(mora.py の関数 total_mora とは別物)。
     score は coverage が高いほど、候補の先頭・末尾が文や句の境界に揃っているほど高く、
     パートの途中に句読点・改行が入っているほど低い。助詞・助動詞で終わるかどうかは見ない。
     単一メッセージ内探索(本モジュール)と複数メッセージ結合探索(chain.py)の
     両方から使う共通の判定なので、モジュール非公開名にしていない。
     """
-    total = sum(m.mora for m in morphemes)
+    total = total_mora if total_mora is not None else sum(m.mora for m in morphemes)
     span = sum(m.mora for s, e in part_ranges for m in morphemes[s:e])
     coverage = span / total if total else 1.0
 
@@ -154,6 +159,7 @@ def _find_from(
     remaining_pattern: tuple[int, ...],
     part_starts: list[int],
     full_pattern: tuple[int, ...],
+    total_mora: int | None = None,
 ) -> list[Candidate]:
     """remaining_pattern の残りパートを start から再帰的に探索する。
 
@@ -161,6 +167,7 @@ def _find_from(
     remaining_pattern は再帰のたびに先頭要素が削られていく残りパート、
     full_pattern は再帰全体を通じて変化しない探索対象パターン全体
     (Candidate.pattern に設定する値)。
+    total_mora は score_candidate にそのまま渡す。
     """
     if not remaining_pattern:
         idxs = part_starts + [start]
@@ -171,7 +178,7 @@ def _find_from(
             return []
         parts = tuple(_join_surface(morphemes, s, e) for s, e in part_ranges)
         full_text = "".join(parts)
-        score, coverage = score_candidate(morphemes, part_ranges)
+        score, coverage = score_candidate(morphemes, part_ranges, total_mora)
         return [
             Candidate(
                 start_idx=idxs[0],
@@ -210,6 +217,7 @@ def _find_from(
                 remaining_pattern[1:],
                 part_starts + [start],
                 full_pattern,
+                total_mora,
             )
         )
     return results
@@ -219,6 +227,7 @@ def find_candidates(
     morphemes: list[Morpheme],
     text: str,
     patterns: tuple[tuple[int, ...], ...] = DEFAULT_PATTERNS,
+    total_mora: int | None = None,
 ) -> list[Candidate]:
     """形態素リストから patterns に含まれる各音数パターンの部分列候補をすべて探索する。
 
@@ -226,6 +235,8 @@ def find_candidates(
     text: 元のテキスト文字列。start/end の参照に使用。
     patterns: 探索する音数パターンのタプル。デフォルトは 5-7-5(川柳)と
         5-7-5-7-7(短歌)の両方。
+    total_mora: メッセージ全体の総モーラ数。省略時は morphemes 全体から求める
+        (詳細は score_candidate を参照)。
 
     返り値: 見つかった Candidate オブジェクトのリスト。
     """
@@ -240,7 +251,9 @@ def find_candidates(
     candidates = []
     for pattern in patterns:
         for i in range(n):
-            candidates.extend(_find_from(morphemes, prefix, text, i, pattern, [], pattern))
+            candidates.extend(
+                _find_from(morphemes, prefix, text, i, pattern, [], pattern, total_mora)
+            )
     return candidates
 
 
