@@ -27,7 +27,15 @@ _REQUIRED_COLUMNS: dict[str, set[str]] = {
     "chain_records": {"id", "parts_json"},
     "praises": {"source", "source_id", "count"},
     "disapprovals": {"source", "source_id", "user_id"},
+    "approvals": {"source", "source_id", "user_id"},
+    "praise_users": {"source", "source_id", "user_id"},
 }
+
+RATING_NONE = "評価なし"
+RATING_POSITIVE = "肯定のみ"
+RATING_NEGATIVE = "否定のみ"
+RATING_BOTH = "肯定と否定"
+_RATINGS = (RATING_NONE, RATING_POSITIVE, RATING_NEGATIVE, RATING_BOTH)
 
 OUTCOME_KEPT = "維持"
 OUTCOME_CHANGED = "別候補に変更"
@@ -53,14 +61,25 @@ class Item:
     self_votes: int
     morphemes_json: str | None = None
     overall_match: float | None = None
+    approve_other_votes: int = 0
+    approve_self_votes: int = 0
+    rater_ids: frozenset[int] = frozenset()
 
     @property
-    def has_other_disapproval(self) -> bool:
-        return self.other_votes > 0
+    def rating(self) -> str:
+        """他者による肯定(あっぱれ・👍)と否定(👎)の有無から評価区分を返す。
 
-    @property
-    def has_self_only_disapproval(self) -> bool:
-        return self.self_votes > 0 and self.other_votes == 0
+        本人の 👍 / 👎 は数えないため、他者の評価が無ければ「評価なし」になる。
+        """
+        positive = self.praised or self.approve_other_votes > 0
+        negative = self.other_votes > 0
+        if positive and negative:
+            return RATING_BOTH
+        if positive:
+            return RATING_POSITIVE
+        if negative:
+            return RATING_NEGATIVE
+        return RATING_NONE
 
 
 def open_readonly(path: str) -> sqlite3.Connection:
@@ -84,21 +103,38 @@ def check_schema(conn: sqlite3.Connection) -> None:
         )
 
 
-def _load_ratings(
-    conn: sqlite3.Connection,
-) -> tuple[dict[tuple[str, int], int], dict[tuple[str, int], list[int]]]:
+@dataclass
+class Ratings:
+    """詠みごとの評価。キーは (source, source_id)。"""
+
+    praises: dict[tuple[str, int], int]
+    praise_users: dict[tuple[str, int], list[int]]
+    approvals: dict[tuple[str, int], list[int]]
+    disapprovals: dict[tuple[str, int], list[int]]
+
+
+def _load_voters(conn: sqlite3.Connection, table: str) -> dict[tuple[str, int], list[int]]:
+    voters: dict[tuple[str, int], list[int]] = {}
+    for source, source_id, user_id in conn.execute(
+        f"SELECT source, source_id, user_id FROM {table}"
+    ):
+        voters.setdefault((source, source_id), []).append(user_id)
+    return voters
+
+
+def _load_ratings(conn: sqlite3.Connection) -> Ratings:
     praises = {
         (source, source_id): count
         for source, source_id, count in conn.execute(
             "SELECT source, source_id, count FROM praises"
         )
     }
-    disapprovals: dict[tuple[str, int], list[int]] = {}
-    for source, source_id, user_id in conn.execute(
-        "SELECT source, source_id, user_id FROM disapprovals"
-    ):
-        disapprovals.setdefault((source, source_id), []).append(user_id)
-    return praises, disapprovals
+    return Ratings(
+        praises=praises,
+        praise_users=_load_voters(conn, "praise_users"),
+        approvals=_load_voters(conn, "approvals"),
+        disapprovals=_load_voters(conn, "disapprovals"),
+    )
 
 
 def _build_item(
@@ -107,27 +143,33 @@ def _build_item(
     row_id: int,
     parts: tuple[str, ...],
     author_ids: frozenset[int],
-    praises: dict[tuple[str, int], int],
-    disapprovals: dict[tuple[str, int], list[int]],
+    ratings: Ratings,
     morphemes_json: str | None = None,
     overall_match: float | None = None,
 ) -> Item:
-    voters = disapprovals.get((source, row_id), [])
-    self_votes = sum(1 for v in voters if v in author_ids)
+    key = (source, row_id)
+    disapprovers = ratings.disapprovals.get(key, [])
+    approvers = ratings.approvals.get(key, [])
+    praisers = ratings.praise_users.get(key, [])
+    dis_self = sum(1 for v in disapprovers if v in author_ids)
+    app_self = sum(1 for v in approvers if v in author_ids)
     return Item(
         id=row_id,
         parts=parts,
-        praised=praises.get((source, row_id), 0) > 0,
-        other_votes=len(voters) - self_votes,
-        self_votes=self_votes,
+        praised=ratings.praises.get(key, 0) > 0,
+        other_votes=len(disapprovers) - dis_self,
+        self_votes=dis_self,
         morphemes_json=morphemes_json,
         overall_match=overall_match,
+        approve_other_votes=len(approvers) - app_self,
+        approve_self_votes=app_self,
+        rater_ids=frozenset(disapprovers + approvers + praisers) - author_ids,
     )
 
 
 def load_records(conn: sqlite3.Connection) -> list[Item]:
     """records を Item のリスト(id 昇順)として読み込む。"""
-    praises, disapprovals = _load_ratings(conn)
+    ratings = _load_ratings(conn)
     items = []
     for row in conn.execute(
         "SELECT id, user_id, part1, part2, part3, part4, part5, morphemes_json, overall_match "
@@ -139,8 +181,7 @@ def load_records(conn: sqlite3.Connection) -> list[Item]:
                 row_id=row[0],
                 parts=tuple(p for p in row[2:7] if p is not None),
                 author_ids=frozenset({row[1]}),
-                praises=praises,
-                disapprovals=disapprovals,
+                ratings=ratings,
                 morphemes_json=row[7],
                 overall_match=row[8],
             )
@@ -150,7 +191,7 @@ def load_records(conn: sqlite3.Connection) -> list[Item]:
 
 def load_chain_records(conn: sqlite3.Connection) -> list[Item]:
     """chain_records を Item のリスト(id 昇順)として読み込む。"""
-    praises, disapprovals = _load_ratings(conn)
+    ratings = _load_ratings(conn)
     items = []
     for row_id, parts_json in conn.execute("SELECT id, parts_json FROM chain_records ORDER BY id"):
         try:
@@ -167,8 +208,7 @@ def load_chain_records(conn: sqlite3.Connection) -> list[Item]:
                 row_id=row_id,
                 parts=parts,
                 author_ids=author_ids,
-                praises=praises,
-                disapprovals=disapprovals,
+                ratings=ratings,
             )
         )
     return items
@@ -177,7 +217,7 @@ def load_chain_records(conn: sqlite3.Connection) -> list[Item]:
 def merge_unique(items: list[Item]) -> list[Item]:
     """同じテキスト(parts)の件を 1 件にまとめる。
 
-    評価フラグは構成レコードの OR、票数は合算し、再現に使う形態素は id が最大の件のものを使う。
+    あっぱれの有無は構成レコードの OR、票数は合算、評価した人は和集合とし、再現に使う形態素は id が最大の件のものを使う。
     """
     groups: dict[tuple[str, ...], list[Item]] = {}
     for item in items:
@@ -194,6 +234,9 @@ def merge_unique(items: list[Item]) -> list[Item]:
                 self_votes=sum(i.self_votes for i in group),
                 morphemes_json=latest.morphemes_json,
                 overall_match=latest.overall_match,
+                approve_other_votes=sum(i.approve_other_votes for i in group),
+                approve_self_votes=sum(i.approve_self_votes for i in group),
+                rater_ids=frozenset().union(*(i.rater_ids for i in group)),
             )
         )
     return merged
@@ -225,24 +268,28 @@ def replay(item: Item) -> str | None:
     return OUTCOME_KEPT if best.parts == item.parts else OUTCOME_CHANGED
 
 
-def _count_flags(items: list[Item]) -> tuple[int, int, int, int]:
-    return (
-        len(items),
-        sum(i.praised for i in items),
-        sum(i.has_other_disapproval for i in items),
-        sum(i.has_self_only_disapproval for i in items),
-    )
+def _count_ratings(items: list[Item]) -> list[int]:
+    counts = Counter(i.rating for i in items)
+    return [counts[r] for r in _RATINGS]
 
 
 def _render_summary(name: str, items: list[Item], *, with_overall_match: bool) -> list[str]:
-    total, praised, other, self_only = _count_flags(items)
-    head = f"{name}: {total} 件"
+    head = f"{name}: {len(items)} 件"
     if with_overall_match:
         head += f" (overall_match あり {sum(i.overall_match is not None for i in items)} 件)"
+    raters = frozenset().union(*(i.rater_ids for i in items))
+    by_rating = " / ".join(
+        f"{r}: {n} 件" for r, n in zip(_RATINGS, _count_ratings(items))
+    )
     return [
         head,
-        f"  あっぱれ付き: {praised} 件 / 他者👎付き: {other} 件 / 本人のみ👎: {self_only} 件",
-        f"  👎 票: 他者 {sum(i.other_votes for i in items)} / 本人 {sum(i.self_votes for i in items)}",
+        f"  {by_rating}",
+        f"  評価した人数 (本人を除く): {len(raters)} 人",
+        f"  票: あっぱれ付き {sum(i.praised for i in items)} 件"
+        f" / 👍 他者 {sum(i.approve_other_votes for i in items)}"
+        f" 本人 {sum(i.approve_self_votes for i in items)}"
+        f" / 👎 他者 {sum(i.other_votes for i in items)}"
+        f" 本人 {sum(i.self_votes for i in items)}",
     ]
 
 
@@ -263,9 +310,10 @@ def render_report(records: list[Item], chain_records: list[Item], *, unique: boo
             by_outcome[outcome].append(item)
 
     lines += ["", "== 再現結果 (現行ロジック、records のみ) =="]
-    lines.append("区分\t件数\tあっぱれ\t他者👎\t本人のみ👎")
+    lines.append("\t".join(["区分", "件数", *_RATINGS]))
     for outcome in _OUTCOMES:
-        lines.append("\t".join([outcome, *map(str, _count_flags(by_outcome[outcome]))]))
+        items = by_outcome[outcome]
+        lines.append("\t".join([outcome, str(len(items)), *map(str, _count_ratings(items))]))
     lines.append(f"復元不可: {unrestorable} 件")
     return "\n".join(lines)
 

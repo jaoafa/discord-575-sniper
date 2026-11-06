@@ -85,20 +85,22 @@ def test_report_separates_self_and_other_disapprovals(tmp_path, capsys):
 
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "== 評価サマリ (単位: レコード) =="
-    assert out[1:4] == [
+    assert out[1:5] == [
         "records: 3 件 (overall_match あり 3 件)",
-        "  あっぱれ付き: 0 件 / 他者👎付き: 1 件 / 本人のみ👎: 1 件",
-        "  👎 票: 他者 1 / 本人 2",
+        "  評価なし: 2 件 / 肯定のみ: 0 件 / 否定のみ: 1 件 / 肯定と否定: 0 件",
+        "  評価した人数 (本人を除く): 1 人",
+        "  票: あっぱれ付き 0 件 / 👍 他者 0 本人 0 / 👎 他者 1 本人 2",
     ]
-    assert out[4:7] == [
+    assert out[5:9] == [
         "chain_records: 1 件",
-        "  あっぱれ付き: 0 件 / 他者👎付き: 1 件 / 本人のみ👎: 0 件",
-        "  👎 票: 他者 1 / 本人 1",
+        "  評価なし: 0 件 / 肯定のみ: 0 件 / 否定のみ: 1 件 / 肯定と否定: 0 件",
+        "  評価した人数 (本人を除く): 1 人",
+        "  票: あっぱれ付き 0 件 / 👍 他者 0 本人 0 / 👎 他者 1 本人 1",
     ]
 
 
 def test_report_replay_breaks_down_outcomes_by_rating(tmp_path, capsys):
-    """再現結果が 維持・別候補に変更・除外 に分かれ、あっぱれ・👎 の内訳が合うことを確認する。"""
+    """再現結果が 維持・別候補に変更・除外 に分かれ、評価区分の内訳が合うことを確認する。"""
     db = tmp_path / "records.db"
     store = RecordStore(str(db))
     kept = _add_record(store, user_id=100)
@@ -119,10 +121,10 @@ def test_report_replay_breaks_down_outcomes_by_rating(tmp_path, capsys):
     out = capsys.readouterr().out.splitlines()
     table = out[out.index("== 再現結果 (現行ロジック、records のみ) ==") + 1:]
     assert table == [
-        "区分\t件数\tあっぱれ\t他者👎\t本人のみ👎",
-        "維持\t1\t1\t0\t0",
-        "別候補に変更\t1\t0\t1\t0",
-        "除外\t2\t1\t0\t1",
+        "区分\t件数\t評価なし\t肯定のみ\t否定のみ\t肯定と否定",
+        "維持\t1\t0\t1\t0\t0",
+        "別候補に変更\t1\t0\t0\t1\t0",
+        "除外\t2\t1\t1\t0\t0",
         "復元不可: 0 件",
     ]
 
@@ -137,7 +139,7 @@ def test_replay_without_overall_match_uses_the_section_only(tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "records: 1 件 (overall_match あり 0 件)" in out
-    assert "維持\t1\t0\t0\t0" in out
+    assert "維持\t1\t1\t0\t0\t0" in out
 
 
 def test_unique_merges_same_text_and_ors_flags(tmp_path, capsys):
@@ -159,22 +161,24 @@ def test_unique_merges_same_text_and_ors_flags(tmp_path, capsys):
 
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "== 評価サマリ (単位: ユニークテキスト) =="
-    assert out[1:4] == [
+    assert out[1:5] == [
         "records: 2 件 (overall_match あり 2 件)",
-        "  あっぱれ付き: 1 件 / 他者👎付き: 1 件 / 本人のみ👎: 0 件",
-        "  👎 票: 他者 1 / 本人 1",
+        "  評価なし: 1 件 / 肯定のみ: 0 件 / 否定のみ: 0 件 / 肯定と否定: 1 件",
+        "  評価した人数 (本人を除く): 2 人",
+        "  票: あっぱれ付き 1 件 / 👍 他者 0 本人 0 / 👎 他者 1 本人 1",
     ]
-    assert out[4:7] == [
+    assert out[5:9] == [
         "chain_records: 1 件",
-        "  あっぱれ付き: 1 件 / 他者👎付き: 0 件 / 本人のみ👎: 1 件",
-        "  👎 票: 他者 0 / 本人 1",
+        "  評価なし: 0 件 / 肯定のみ: 1 件 / 否定のみ: 0 件 / 肯定と否定: 0 件",
+        "  評価した人数 (本人を除く): 1 人",
+        "  票: あっぱれ付き 1 件 / 👍 他者 0 本人 0 / 👎 他者 0 本人 1",
     ]
 
 
 def test_unique_self_only_disapproval_yields_to_other_disapproval_on_the_same_text(
     tmp_path, capsys
 ):
-    """--unique では、同一テキストの別レコードに他者の 👎 があれば本人のみ👎 には数えないことを確認する。"""
+    """--unique では、同一テキストの別レコードに他者の 👎 があれば否定のみになり、本人の 👎 は票にだけ数えることを確認する。"""
     db = tmp_path / "records.db"
     store = RecordStore(str(db))
     self_only = _add_record(store, user_id=100)
@@ -185,10 +189,11 @@ def test_unique_self_only_disapproval_yields_to_other_disapproval_on_the_same_te
     assert _report(db, "--unique") == 0
 
     out = capsys.readouterr().out.splitlines()
-    assert out[1:4] == [
+    assert out[1:5] == [
         "records: 1 件 (overall_match あり 1 件)",
-        "  あっぱれ付き: 0 件 / 他者👎付き: 1 件 / 本人のみ👎: 0 件",
-        "  👎 票: 他者 1 / 本人 1",
+        "  評価なし: 0 件 / 肯定のみ: 0 件 / 否定のみ: 1 件 / 肯定と否定: 0 件",
+        "  評価した人数 (本人を除く): 1 人",
+        "  票: あっぱれ付き 0 件 / 👍 他者 0 本人 0 / 👎 他者 1 本人 1",
     ]
 
 
@@ -202,8 +207,8 @@ def test_unique_replays_the_latest_record_of_each_text(tmp_path, capsys):
     assert _report(db, "--unique") == 0
 
     out = capsys.readouterr().out
-    assert "維持\t1\t0\t0\t0" in out
-    assert "除外\t0\t0\t0\t0" in out
+    assert "維持\t1\t1\t0\t0\t0" in out
+    assert "除外\t0\t0\t0\t0\t0" in out
 
 
 def test_unrestorable_morphemes_are_counted_and_do_not_stop_the_report(tmp_path, capsys):
@@ -221,8 +226,8 @@ def test_unrestorable_morphemes_are_counted_and_do_not_stop_the_report(tmp_path,
     assert _report(db) == 0
 
     out = capsys.readouterr().out
-    assert "  あっぱれ付き: 1 件 / 他者👎付き: 0 件 / 本人のみ👎: 0 件" in out
-    assert "維持\t1\t0\t0\t0" in out
+    assert "  評価なし: 1 件 / 肯定のみ: 1 件 / 否定のみ: 0 件 / 肯定と否定: 0 件" in out
+    assert "維持\t1\t1\t0\t0\t0" in out
     assert out.splitlines()[-1] == "復元不可: 1 件"
 
 
@@ -290,6 +295,54 @@ def test_old_schema_exits_one_and_names_missing_columns(tmp_path, capsys):
     assert err.startswith("エラー: DB のスキーマが古いため評価できません。不足: ")
     assert "records.overall_match" in err
     assert "disapprovals.user_id" in err
+    assert ", approvals.user_id" in err
+    assert ", praise_users.user_id" in err
+
+
+def test_report_distinguishes_positive_negative_and_unrated(tmp_path, capsys):
+    """あっぱれ・👍・👎 から 4 区分と評価人数・票の内訳が出て、本人の評価は数えないことを確認する。"""
+    db = tmp_path / "records.db"
+    store = RecordStore(str(db))
+    praised_and_disliked = _add_record(store, user_id=100)
+    approved = _add_record(store, user_id=101)
+    self_approved = _add_record(store, user_id=102)
+    _add_record(store, user_id=103)
+    store.register_praise(source="record", source_id=praised_and_disliked, user_id=900)
+    store.register_disapproval(source="record", source_id=praised_and_disliked, user_id=901)
+    store.register_approval(source="record", source_id=approved, user_id=900)
+    store.register_approval(source="record", source_id=approved, user_id=902)
+    store.register_approval(source="record", source_id=self_approved, user_id=102)
+
+    assert _report(db) == 0
+
+    out = capsys.readouterr().out.splitlines()
+    assert out[1:5] == [
+        "records: 4 件 (overall_match あり 4 件)",
+        "  評価なし: 2 件 / 肯定のみ: 1 件 / 否定のみ: 0 件 / 肯定と否定: 1 件",
+        "  評価した人数 (本人を除く): 3 人",
+        "  票: あっぱれ付き 1 件 / 👍 他者 2 本人 1 / 👎 他者 1 本人 0",
+    ]
+
+
+def test_unique_merges_approvals_and_raters(tmp_path, capsys):
+    """--unique で同一テキストの 👍 票が合算され、評価した人が和集合になることを確認する。"""
+    db = tmp_path / "records.db"
+    store = RecordStore(str(db))
+    first = _add_record(store, user_id=100)
+    second = _add_record(store, user_id=100)
+    store.register_approval(source="record", source_id=first, user_id=900)
+    store.register_approval(source="record", source_id=second, user_id=900)
+    store.register_approval(source="record", source_id=second, user_id=901)
+
+    assert _report(db, "--unique") == 0
+
+    out = capsys.readouterr().out.splitlines()
+    assert out[1:5] == [
+        "records: 1 件 (overall_match あり 1 件)",
+        "  評価なし: 0 件 / 肯定のみ: 1 件 / 否定のみ: 0 件 / 肯定と否定: 0 件",
+        "  評価した人数 (本人を除く): 2 人",
+        "  票: あっぱれ付き 0 件 / 👍 他者 3 本人 0 / 👎 他者 0 本人 0",
+    ]
 
 
 def test_module_runs_as_a_single_command(tmp_path):
@@ -306,7 +359,7 @@ def test_module_runs_as_a_single_command(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines()[0] == "== 評価サマリ (単位: レコード) =="
-    assert "維持\t1\t0\t0\t0" in result.stdout
+    assert "維持\t1\t1\t0\t0\t0" in result.stdout
 
 
 @pytest.mark.parametrize("flag", [[], ["--unique"]])
