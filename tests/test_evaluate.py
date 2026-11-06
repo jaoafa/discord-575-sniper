@@ -29,11 +29,11 @@ def _tanka_morphemes() -> list[Morpheme]:
 
 
 def _broken_morphemes() -> list[Morpheme]:
-    """第 1 パートの途中に読点が 3 つ入った 5-7-5。"""
+    """第 1 パートの途中に読点が 2 つ入った 5-7-5(境界は名詞同士にならない)。"""
     comma = _m("、", 0, pos="補助記号")
     return [
-        _m("あ", 1), comma, _m("い", 1), comma, _m("う", 1), comma, _m("えお", 2),
-        _m("かきくけこさし", 7), _m("たちつてと", 5),
+        _m("あ", 1), comma, _m("い", 1), comma, _m("うえお", 3, pos="動詞"),
+        _m("かきくけこさし", 7, pos="動詞"), _m("たちつてと", 5),
     ]
 
 
@@ -63,7 +63,7 @@ def test_excluded_fixture_really_falls_below_min_score():
     """除外ケースの fixture が、現行の score_candidate で MIN_SCORE 未満になることを確認する。"""
     morphemes = _broken_morphemes()
     span = sum(m.mora for m in morphemes)
-    score, _ = score_candidate(morphemes, [(0, 7), (7, 8), (8, 9)], total_mora=round(span / 0.5))
+    score, _ = score_candidate(morphemes, [(0, 5), (5, 6), (6, 7)], total_mora=round(span / 0.5))
     assert score < MIN_SCORE
 
 
