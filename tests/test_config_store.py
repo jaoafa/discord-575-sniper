@@ -1,6 +1,32 @@
+import threading
+
 import pytest
 
 from src.config_store import ConfigStore
+
+THREADS = 8
+CALLS_PER_THREAD = 3000
+
+
+def _run_in_threads(targets):
+    """各 target を別スレッドで同時に実行し、発生した例外を全て集めて返す。"""
+    errors = []
+
+    def wrap(target):
+        def run():
+            try:
+                target()
+            except Exception as e:
+                errors.append(repr(e))
+
+        return run
+
+    threads = [threading.Thread(target=wrap(t)) for t in targets]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return errors
 
 
 @pytest.fixture
@@ -52,3 +78,32 @@ def test_persists_across_instances(tmp_path):
     store1.set_enabled(111, True)
     store2 = ConfigStore(db_path)
     assert store2.is_enabled(channel_id=111) is True
+
+
+def test_concurrent_is_enabled_raises_no_error(store):
+    """複数スレッドから is_enabled を同時に呼んでも例外が発生しないことを確認する。"""
+    store.set_enabled(1, True)
+
+    def reader():
+        for _ in range(CALLS_PER_THREAD):
+            assert store.is_enabled(1, parent_id=2) is True
+
+    assert _run_in_threads([reader] * THREADS) == []
+
+
+def test_concurrent_read_and_write_raises_no_error(store):
+    """is_enabled と set_enabled を複数スレッドから混在させても例外が発生せず、最後に書いた値が読めることを確認する。"""
+
+    def reader():
+        for _ in range(CALLS_PER_THREAD):
+            store.is_enabled(1, parent_id=2)
+
+    def writer():
+        for i in range(CALLS_PER_THREAD):
+            store.set_enabled(1, i % 2 == 0)
+
+    errors = _run_in_threads([reader] * THREADS + [writer])
+    assert errors == []
+
+    store.set_enabled(1, True)
+    assert store.is_enabled(1) is True

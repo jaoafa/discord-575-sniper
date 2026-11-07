@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 
 
 class ConfigStore:
@@ -16,7 +17,8 @@ class ConfigStore:
         """
         # check_same_thread=False: 呼び出し側で asyncio.to_thread を使い、
         # イベントループをブロックしないよう別スレッドから呼び出すため。
-        # 呼び出しは常に await で直列化されており、同時アクセスは発生しない。
+        # on_message などが複数スレッドから同時に呼ぶため、_lock で接続の利用を直列化する。
+        self._lock = threading.Lock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute(
             """
@@ -58,14 +60,15 @@ class ConfigStore:
             channel_id: 対象のチャンネル ID。
             enabled: True なら有効、False なら無効。
         """
-        self._conn.execute(
-            """
-            INSERT INTO channel_settings (channel_id, enabled) VALUES (?, ?)
-            ON CONFLICT(channel_id) DO UPDATE SET enabled = excluded.enabled
-            """,
-            (channel_id, int(enabled)),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO channel_settings (channel_id, enabled) VALUES (?, ?)
+                ON CONFLICT(channel_id) DO UPDATE SET enabled = excluded.enabled
+                """,
+                (channel_id, int(enabled)),
+            )
+            self._conn.commit()
 
     def _get_raw(self, channel_id: int) -> bool | None:
         """指定されたチャンネルの設定値を直接取得する。
@@ -76,10 +79,11 @@ class ConfigStore:
         Returns:
             設定値が存在する場合はその値、存在しない場合は None。
         """
-        row = self._conn.execute(
-            "SELECT enabled FROM channel_settings WHERE channel_id = ?",
-            (channel_id,),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT enabled FROM channel_settings WHERE channel_id = ?",
+                (channel_id,),
+            ).fetchone()
         if row is None:
             return None
         return bool(row[0])
