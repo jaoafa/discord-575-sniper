@@ -940,3 +940,120 @@ def test_find_senryu_by_message_id_returns_none_for_other_channel_or_unknown_id(
     assert store.find_senryu_by_message_id(4000, 2999) is None
     assert store.find_senryu_by_message_id(11, 2999) is None
     assert store.find_senryu_by_message_id(777, 2000) is None
+
+
+SINCE = "2026-01-02T00:00:00+00:00"
+
+
+def _add_with_detected_at(store, db_path, *, detected_at, channel_id=2000, user_id=3000,
+                          parts=("古池や", "蛙飛び込む", "水の音")):
+    """detected_at を指定した時刻に差し替えて records に 1 件追加する。"""
+    record_id = store.add_record(
+        guild_id=1000, channel_id=channel_id, user_id=user_id, message_id=4000,
+        parts=parts, morphemes=[], app_version="1.0.0",
+    )
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE records SET detected_at = ? WHERE id = ?", (detected_at, record_id))
+    conn.commit()
+    conn.close()
+
+
+def test_has_recent_record_true_for_same_text_in_period(tmp_path):
+    """同一チャンネル・同一テキストの記録が期間内にあれば True を返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    _add_with_detected_at(store, db_path, detected_at="2026-01-02T10:00:00+00:00")
+
+    assert store.has_recent_record(
+        channel_id=2000, parts=("古池や", "蛙飛び込む", "水の音"), since=SINCE
+    ) is True
+
+
+def test_has_recent_record_false_when_record_is_older_than_since(tmp_path):
+    """期間より古い記録しか無ければ False を返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    _add_with_detected_at(store, db_path, detected_at="2026-01-01T23:59:59+00:00")
+
+    assert store.has_recent_record(
+        channel_id=2000, parts=("古池や", "蛙飛び込む", "水の音"), since=SINCE
+    ) is False
+
+
+def test_has_recent_record_true_when_detected_at_equals_since(tmp_path):
+    """detected_at がちょうど since の記録は期間内として扱うことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    _add_with_detected_at(store, db_path, detected_at=SINCE)
+
+    assert store.has_recent_record(
+        channel_id=2000, parts=("古池や", "蛙飛び込む", "水の音"), since=SINCE
+    ) is True
+
+
+def test_has_recent_record_false_for_other_channel(tmp_path):
+    """別チャンネルの記録は対象外であることを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    _add_with_detected_at(store, db_path, detected_at="2026-01-02T10:00:00+00:00", channel_id=2999)
+
+    assert store.has_recent_record(
+        channel_id=2000, parts=("古池や", "蛙飛び込む", "水の音"), since=SINCE
+    ) is False
+
+
+def test_has_recent_record_false_for_different_text(tmp_path):
+    """テキストが異なる記録は対象外であることを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    _add_with_detected_at(store, db_path, detected_at="2026-01-02T10:00:00+00:00")
+
+    assert store.has_recent_record(
+        channel_id=2000, parts=("柿食えば", "鐘が鳴るなり", "法隆寺"), since=SINCE
+    ) is False
+
+
+def test_has_recent_record_false_for_tanka_sharing_senryu_prefix(tmp_path):
+    """川柳の記録に対し、同じ先頭を持つ短歌は別の詠みとして扱うことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    _add_with_detected_at(store, db_path, detected_at="2026-01-02T10:00:00+00:00")
+
+    assert store.has_recent_record(
+        channel_id=2000,
+        parts=("古池や", "蛙飛び込む", "水の音", "やまぶきのえだ", "うめがかがやく"),
+        since=SINCE,
+    ) is False
+
+
+def test_has_recent_record_true_for_same_tanka(tmp_path):
+    """短歌の記録に対し、同一の短歌は True を返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    tanka = ("古池や", "蛙飛び込む", "水の音", "やまぶきのえだ", "うめがかがやく")
+    _add_with_detected_at(store, db_path, detected_at="2026-01-02T10:00:00+00:00", parts=tanka)
+
+    assert store.has_recent_record(channel_id=2000, parts=tanka, since=SINCE) is True
+
+
+def test_has_recent_record_true_regardless_of_user(tmp_path):
+    """投稿者が別のユーザーの記録でも True を返すことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    store = RecordStore(db_path)
+    _add_with_detected_at(store, db_path, detected_at="2026-01-02T10:00:00+00:00", user_id=7777)
+
+    assert store.has_recent_record(
+        channel_id=2000, parts=("古池や", "蛙飛び込む", "水の音"), since=SINCE
+    ) is True
+
+
+def test_has_recent_record_true_after_reopening_database(tmp_path):
+    """同じ DB ファイルを開き直した RecordStore でも True を返す(再起動後も抑制が効く)ことを確認する。"""
+    db_path = str(tmp_path / "records.db")
+    _add_with_detected_at(
+        RecordStore(db_path), db_path, detected_at="2026-01-02T10:00:00+00:00"
+    )
+
+    assert RecordStore(db_path).has_recent_record(
+        channel_id=2000, parts=("古池や", "蛙飛び込む", "水の音"), since=SINCE
+    ) is True

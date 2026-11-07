@@ -3,6 +3,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
@@ -29,6 +30,9 @@ _DISAPPROVAL_EMOJI = "👎"
 
 # 検出の良さの表明(肯定評価)として扱うリアクション絵文字。対象は _DISAPPROVAL_EMOJI と同じ。
 _APPROVAL_EMOJI = "👍"
+
+# 同一チャンネルで同じ詠みを再検出しても、この秒数以内に記録済みなら返信も記録もしない。
+DUPLICATE_SUPPRESS_SECONDS = 24 * 60 * 60
 
 # あっぱれ判定に使う正規表現。メッセージ本文(右トリム後)が「あっぱれ」で
 # 終わっていればマッチする(前方に任意の文字列があってもよい)。
@@ -636,7 +640,25 @@ def create_bot(
             except Exception:
                 logger.exception("川柳検出処理中に例外が発生したため、このメッセージの処理をスキップします。")
                 return
+            duplicate = False
             if detection is not None:
+                since = (
+                    datetime.now(timezone.utc) - timedelta(seconds=DUPLICATE_SUPPRESS_SECONDS)
+                ).isoformat()
+                try:
+                    # sqlite3 呼び出しはブロッキングなので to_thread でイベントループの外へ逃がす。
+                    duplicate = await asyncio.to_thread(
+                        record_store.has_recent_record,
+                        channel_id=channel.id,
+                        parts=detection.candidate.parts,
+                        since=since,
+                    )
+                except Exception:
+                    # 判定の障害で検出自体を止めない(重複返信は許容する)。
+                    logger.exception("重複検出の判定に失敗したため、重複なしとして処理します。")
+                if duplicate:
+                    logger.info("同一の詠みの再検出を抑制しました。channel_id=%s", channel.id)
+            if detection is not None and not duplicate:
                 # 返信を先に送り、その ID を記録に残す(リアクションによる評価の引き当てに使う)。
                 # 記録と返信は互いの成否に依存させない(返信に失敗しても記録は行い、
                 # 記録側の障害でユーザーへの返信まで失われないようにするため)。

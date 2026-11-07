@@ -84,6 +84,7 @@ class FakeMessage:
 
 
 SENRYU_TEXT = "古池や蛙飛び込む水の音"
+OTHER_SENRYU_TEXT = "柿食えば鐘が鳴るなり法隆寺"
 TANKA_TEXT = "古池や蛙飛び込む水の音やまぶきのえだうめがかがやく"
 NON_SENRYU_TEXT = "こんにちは"
 
@@ -956,10 +957,12 @@ def _reply_to(message_id: int):
     return types.SimpleNamespace(message_id=message_id)
 
 
-async def _detect_senryu(client, channel, *, message_id: int, author_id: int = 7000):
+async def _detect_senryu(
+    client, channel, *, message_id: int, author_id: int = 7000, text: str = SENRYU_TEXT
+):
     """川柳を1件投稿して検出させ、そのメッセージを返す。"""
     message = FakeMessage(
-        SENRYU_TEXT, FakeGuild(GUILD_ID), FakeAuthor(bot=False, author_id=author_id),
+        text, FakeGuild(GUILD_ID), FakeAuthor(bot=False, author_id=author_id),
         channel, message_id=message_id,
     )
     await client.on_message(message)
@@ -982,7 +985,7 @@ async def test_on_message_appare_reply_targets_replied_senryu_not_latest(client,
     """詠みAの検出返信または元メッセージへの返信のあっぱれは、最新の詠みBではなくAに加算されることを確認する。"""
     channel = FakeChannel(CHANNEL_ID)
     await _detect_senryu(client, channel, message_id=9800)
-    await _detect_senryu(client, channel, message_id=9810)
+    await _detect_senryu(client, channel, message_id=9810, text=OTHER_SENRYU_TEXT)
 
     await _send_appare(
         client, channel, message_id=9820, reference=_reply_to(9800 + target_offset),
@@ -1121,3 +1124,128 @@ async def test_senryu_explain_command_reports_error_when_explain_fails(client, m
     args, kwargs = interaction.response.send_message_calls[0]
     assert args[0] == "説明の生成に失敗しました。時間を置いて再度お試しください。"
     assert kwargs["ephemeral"] is True
+
+
+async def _post(client, text, *, author_id=5000, message_id=9000, channel_id=CHANNEL_ID):
+    """指定内容のメッセージを on_message に渡し、使った FakeMessage を返す。"""
+    message = FakeMessage(
+        text, FakeGuild(GUILD_ID), FakeAuthor(bot=False, author_id=author_id),
+        FakeChannel(channel_id), message_id=message_id,
+    )
+    await client.on_message(message)
+    return message
+
+
+def _count_records(records_db_path):
+    conn = sqlite3.connect(records_db_path)
+    count = conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+    conn.close()
+    return count
+
+
+@pytest.mark.asyncio
+async def test_on_message_suppresses_same_text_within_period(client, records_db_path):
+    """同一チャンネルで同一テキストを再度投稿すると、2回目は返信も記録もされないことを確認する。"""
+    first = await _post(client, SENRYU_TEXT, message_id=9000)
+    second = await _post(client, SENRYU_TEXT, message_id=9001)
+
+    assert len(first.reply_calls) == 1
+    assert second.reply_calls == []
+    assert _count_records(records_db_path) == 1
+
+
+@pytest.mark.asyncio
+async def test_on_message_suppresses_same_text_from_other_user(client, records_db_path):
+    """投稿者が別のユーザーでも、同一テキストの再検出は抑制されることを確認する。"""
+    await _post(client, SENRYU_TEXT, author_id=5000, message_id=9000)
+    second = await _post(client, SENRYU_TEXT, author_id=6000, message_id=9001)
+
+    assert second.reply_calls == []
+    assert _count_records(records_db_path) == 1
+
+
+@pytest.mark.asyncio
+async def test_on_message_detects_again_after_period(client, records_db_path):
+    """記録が抑制期間より古ければ、同一テキストでも通常どおり返信・記録されることを確認する。"""
+    await _post(client, SENRYU_TEXT, message_id=9000)
+    conn = sqlite3.connect(records_db_path)
+    conn.execute("UPDATE records SET detected_at = '2000-01-01T00:00:00+00:00'")
+    conn.commit()
+    conn.close()
+
+    second = await _post(client, SENRYU_TEXT, message_id=9001)
+
+    assert len(second.reply_calls) == 1
+    assert _count_records(records_db_path) == 2
+
+
+@pytest.mark.asyncio
+async def test_on_message_detects_other_channel_same_text(
+    client, config_store, records_db_path
+):
+    """別チャンネルでの同一テキストは抑制されないことを確認する。"""
+    config_store.set_enabled(CHANNEL_ID + 1, True)
+    await _post(client, SENRYU_TEXT, message_id=9000)
+    second = await _post(client, SENRYU_TEXT, message_id=9001, channel_id=CHANNEL_ID + 1)
+
+    assert len(second.reply_calls) == 1
+    assert _count_records(records_db_path) == 2
+
+
+@pytest.mark.asyncio
+async def test_on_message_replies_even_when_duplicate_check_fails(
+    client, record_store, records_db_path, monkeypatch
+):
+    """重複判定が例外になっても、通常どおり返信・記録されることを確認する(フェイルオープン)。"""
+    def failing_has_recent_record(**kwargs):
+        raise RuntimeError("db error")
+
+    monkeypatch.setattr(record_store, "has_recent_record", failing_has_recent_record)
+    await _post(client, SENRYU_TEXT, message_id=9000)
+    second = await _post(client, SENRYU_TEXT, message_id=9001)
+
+    assert len(second.reply_calls) == 1
+    assert _count_records(records_db_path) == 2
+
+
+@pytest.mark.asyncio
+async def test_on_message_suppressed_message_still_goes_through_chain_tracker(
+    client, chain_tracker, monkeypatch
+):
+    """抑制された投稿でも、連歌チェーンの処理は呼ばれることを確認する。"""
+    await _post(client, SENRYU_TEXT, message_id=9000)
+    calls = []
+    original = chain_tracker.process_message
+
+    def spy(**kwargs):
+        calls.append(kwargs["message_id"])
+        return original(**kwargs)
+
+    monkeypatch.setattr(chain_tracker, "process_message", spy)
+    second = await _post(client, SENRYU_TEXT, message_id=9001)
+
+    assert second.reply_calls == []
+    assert calls == [9001]
+
+
+@pytest.mark.asyncio
+async def test_on_message_suppressed_message_does_not_update_praise_target(
+    client, praise_tracker, monkeypatch
+):
+    """抑制された投稿では、あっぱれ対象の直前の詠みが更新されないことを確認する。"""
+    calls = []
+    original = praise_tracker.record_detection
+
+    def spy(**kwargs):
+        calls.append(kwargs["reply_message_id"])
+        return original(**kwargs)
+
+    monkeypatch.setattr(praise_tracker, "record_detection", spy)
+    await _post(client, SENRYU_TEXT, message_id=9000)
+    target_before = praise_tracker.get_target(channel_id=CHANNEL_ID, now=time.monotonic())
+    await _post(client, SENRYU_TEXT, message_id=9001)
+    target_after = praise_tracker.get_target(channel_id=CHANNEL_ID, now=time.monotonic())
+
+    assert calls == [9000]
+    assert target_before is not None
+    assert target_after.source_id == target_before.source_id
