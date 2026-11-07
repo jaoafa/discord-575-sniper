@@ -31,6 +31,12 @@ def _inner_sokuon() -> tuple[tuple[str, ...], list[Morpheme]]:
     ]
 
 
+def _no_candidate(tag: str) -> tuple[tuple[str, ...], list[Morpheme]]:
+    """先頭が助詞で始まるため、現行ロジックでは候補が見つからない詠み。"""
+    parts, morphemes = _plain(tag)
+    return parts, [_m(morphemes[0].surface, 5, pos="助詞"), *morphemes[1:]]
+
+
 def _tanka(tag: str) -> tuple[tuple[str, ...], list[Morpheme]]:
     parts, morphemes = _plain(tag)
     parts += ("なにぬねのはひ", "ふへほまみむめ")
@@ -107,6 +113,7 @@ def test_dry_run_prints_counts_and_ids_without_changing_db(tmp_path, capsys):
         "only_sokuon: 1 件\n  ID: 3\n"
         "disapproved: 1 件\n  ID: 4\n"
         "low_score: 1 件\n  ID: 5\n"
+        "rejudged: 0 件\n  ID: なし\n"
         "合計: 4 件 / records 全体: 6 件\n"
     )
     assert _snapshot(path) == before
@@ -159,6 +166,64 @@ def test_first_reason_in_priority_order_is_recorded(tmp_path):
     rows = dict(conn.execute("SELECT id, quarantine_reason FROM quarantined_records"))
     conn.close()
     assert rows == {dup_all: "duplicate", sokuon_dis: "only_sokuon", dis_low: "disapproved"}
+
+
+def test_rejudged_quarantines_records_with_no_candidate_under_current_logic(tmp_path, capsys):
+    path = tmp_path / "records.db"
+    store = RecordStore(str(path))
+    _add(store, _plain("あ"))
+    rejected = _add(store, _no_candidate("い"))
+
+    assert _run(path) == 0
+    assert "rejudged: 1 件\n  ID: 2\n合計: 1 件 / records 全体: 2 件\n" in capsys.readouterr().out
+
+    assert _run(path, "--apply") == 0
+    assert _ids(path, "records") == [1]
+    conn = sqlite3.connect(str(path))
+    rows = conn.execute("SELECT id, quarantine_reason FROM quarantined_records").fetchall()
+    conn.close()
+    assert rows == [(rejected, "rejudged")]
+
+
+def test_rejudged_comes_after_low_score_in_priority(tmp_path):
+    path = tmp_path / "records.db"
+    store = RecordStore(str(path))
+    _add(store, _plain("あ"))
+    low = _add(store, _no_candidate("い"), score=0.1)
+
+    assert _run(path, "--apply") == 0
+
+    conn = sqlite3.connect(str(path))
+    rows = conn.execute("SELECT id, quarantine_reason FROM quarantined_records").fetchall()
+    conn.close()
+    assert rows == [(low, "low_score")]
+
+
+def test_praised_record_is_not_rejudged(tmp_path):
+    path = tmp_path / "records.db"
+    store = RecordStore(str(path))
+    rid = _add(store, _no_candidate("あ"))
+    store.register_praise(source="record", source_id=rid, user_id=99)
+
+    assert _run(path, "--apply") == 0
+
+    assert _ids(path, "records") == [rid]
+
+
+def test_rejudged_restore_returns_original_id_and_second_apply_is_noop(tmp_path):
+    path = tmp_path / "records.db"
+    store = RecordStore(str(path))
+    _add(store, _plain("あ"))
+    rejected = _add(store, _no_candidate("い"))
+    before = _snapshot(path)
+    assert _run(path, "--apply") == 0
+    after_first = _snapshot(path)
+    assert _run(path, "--apply") == 0
+    assert _snapshot(path) == after_first
+
+    assert _restore(path, "--id", str(rejected), "--apply") == 0
+
+    assert _snapshot(path)["records"] == before["records"]
 
 
 def test_praised_records_are_never_quarantined(tmp_path):

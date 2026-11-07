@@ -21,7 +21,7 @@ from .senryu.tokenizer import Morpheme
 
 LOW_SCORE_THRESHOLD = 0.5
 
-REASONS = ("duplicate", "only_sokuon", "disapproved", "low_score")
+REASONS = ("duplicate", "only_sokuon", "disapproved", "low_score", "rejudged")
 
 _QUARANTINE_TABLE = "quarantined_records"
 _BUSY_TIMEOUT_SECONDS = 5.0
@@ -29,7 +29,7 @@ _PART_COLUMNS = ("part1", "part2", "part3", "part4", "part5")
 _PATTERNS = {3: finder.SENRYU_PATTERN, 5: finder.TANKA_PATTERN}
 
 _REQUIRED_COLUMNS: dict[str, set[str]] = {
-    "records": {"id", *_PART_COLUMNS, "morphemes_json", "score"},
+    "records": {"id", *_PART_COLUMNS, "morphemes_json", "score", "overall_match"},
     "praises": {"source", "source_id", "count"},
     "disapprovals": {"source", "source_id"},
 }
@@ -142,6 +142,10 @@ def _split_parts(
     return parts
 
 
+def _is_rejected_by_current_logic(item: evaluate.Item) -> bool:
+    return evaluate.replay(item) == evaluate.OUTCOME_EXCLUDED
+
+
 def classify(conn: sqlite3.Connection) -> dict[int, str]:
     """退避対象の records.id と退避理由を id 昇順で返す。DB は変更しない。
 
@@ -161,10 +165,10 @@ def classify(conn: sqlite3.Connection) -> dict[int, str]:
     first_id_by_text: dict[str, int] = {}
     plan: dict[int, str] = {}
     for row in conn.execute(
-        "SELECT id, part1, part2, part3, part4, part5, morphemes_json, score "
+        "SELECT id, part1, part2, part3, part4, part5, morphemes_json, score, overall_match "
         "FROM records ORDER BY id"
     ).fetchall():
-        record_id, morphemes_json, score = row[0], row[6], row[7]
+        record_id, morphemes_json, score, overall_match = row[0], row[6], row[7], row[8]
         morphemes = _parse_morphemes(record_id, morphemes_json)
         part_count = sum(p is not None for p in row[1:6])
         parts = _split_parts(record_id, morphemes, part_count)
@@ -181,6 +185,14 @@ def classify(conn: sqlite3.Connection) -> dict[int, str]:
             plan[record_id] = "disapproved"
         elif score is not None and score < LOW_SCORE_THRESHOLD:
             plan[record_id] = "low_score"
+        elif _is_rejected_by_current_logic(
+            evaluate.Item(
+                id=record_id, parts=tuple(p for p in row[1:6] if p is not None), praised=False,
+                other_votes=0, self_votes=0, morphemes_json=morphemes_json,
+                overall_match=overall_match,
+            )
+        ):
+            plan[record_id] = "rejudged"
     return plan
 
 

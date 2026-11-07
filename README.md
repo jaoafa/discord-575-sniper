@@ -147,6 +147,7 @@ python -m src.quarantine restore [--db data/records.db] [--apply] (--all | --id 
 | `only_sokuon` | 促音だけのパートを含む |
 | `disapproved` | 👎 が 1 票以上 |
 | `low_score` | `score` が 0.5 未満(`score` が NULL の旧記録は対象外) |
+| `rejudged` | 保存された `morphemes_json` に現行の候補選択を再実行しても候補が見つからない(`python -m src.evaluate` の「除外」と同じ判定。再トークナイズはしない) |
 
 `restore` も既定は dry-run で、`--apply` で元の `id` のまま `records` に戻す。`--all` は退避済みの全件、`--id` は指定した `id` だけを戻す。
 
